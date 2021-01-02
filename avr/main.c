@@ -1,6 +1,4 @@
-#pragma clang diagnostic push
 #pragma ide diagnostic ignored "hicpp-signed-bitwise"
-#pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
 
 #include <avr/io.h>
@@ -89,7 +87,7 @@ int main(void) {
     sei();
     for (;;) {
 
-        tmp_sense = !(SENSE_IN_PORT & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
+        tmp_sense = !(SENSE_IN_PINS & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
         if (tmp_sense != cassette_sense) {
             cassette_sense = tmp_sense;
             if (cassette_sense) {
@@ -140,12 +138,3 @@ ISR(TIMER1_OVF_vect) {
         tm_overflows = 0;
     }
 }
-
-//ISR(BADISR_vect)
-//{
-//    PORTB |= 1 << PB0;
-//    for (;;);
-//}
-
-#pragma clang diagnostic pop
-#pragma clang diagnostic pop

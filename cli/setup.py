@@ -16,7 +16,7 @@ setup(
     author_email="vannini@gmail.com",
     license="GPLv3",
     classifiers=[
-        "License :: OSI Approved :: GPLv3",
+        "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.7"
     ],

@@ -5,6 +5,9 @@ import serial
 import os.path
 import logging
 
+log = logging.getLogger(__name__)
+logging.basicConfig(format='%(message)s', level=logging.INFO)
+
 
 def verify_checksum(buf):
     checksum = 64
@@ -118,7 +121,7 @@ def help(exit_error, message=None):
     if message is not None:
         log.warning(message)
 
-    log.warning("pytapdump.py [-d /dev/ttyUSB4] [-y] streetfighter_a.tap")
+    log.warning("truetape64cli [-d /dev/ttyUSB4] [-y] streetfighter_a.tap")
     log.warning(" -d: specify serial device (default is /dev/ttyUSB0)")
     log.warning(" -y: overwrite output file if exists")
 
@@ -128,7 +131,7 @@ def help(exit_error, message=None):
         sys.exit(0)
 
 
-def main(argv):
+def run(argv):
     serial_device = "/dev/ttyUSB0"
     output_file = None
     opts = None
@@ -160,11 +163,13 @@ def main(argv):
     dump(serial_device, output_file)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(format='%(message)s', level=logging.INFO)
-    log = logging.getLogger(__name__)
+def main():
     try:
-        main(sys.argv[1:])
+        run(sys.argv[1:])
     except KeyboardInterrupt:
         print("Aborted.")
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
