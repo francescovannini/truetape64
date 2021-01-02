@@ -59,14 +59,14 @@ int main(void) {
     bool tmp_sense;
 
     // Status led
-    CONTROL_PORT_DDR |= 1 << LED_PIN;
+    LED_PORT_DDR |= 1 << LED_PIN;
 
     // Cassette sense input, Datassette F-6 pin to PB1
-    CONTROL_PORT_DDR &= ~(1 << SENSE_IN_PIN);
-    CONTROL_PORT_OUT |= 1 << SENSE_IN_PIN; // Pull-up
+    SENSE_IN_PORT_DDR &= ~(1 << SENSE_IN_PIN);
+    SENSE_IN_PORT |= 1 << SENSE_IN_PIN; // Pull-up
 
     // Cassette sense output to serial CTS
-    CONTROL_PORT_DDR |= 1 << SENSE_OUT_PIN;
+    SENSE_OUT_PORT_DDR |= 1 << SENSE_OUT_PIN;
     SET_CASSETTE_SENSE;
 
     // Capturing falling edges with Timer/Counter 1
@@ -82,14 +82,14 @@ int main(void) {
     UCSRC = (0 << USBS) | (1 << UCSZ1) | (1 << UCSZ0); // 8, N, 1
 
     // Blink when boot done
-    CONTROL_PORT_OUT |= 1 << LED_PIN;
+    LED_PORT |= 1 << LED_PIN;
     _delay_ms(500);
-    CONTROL_PORT_OUT &= ~(1 << LED_PIN);
+    LED_PORT &= ~(1 << LED_PIN);
 
     sei();
     for (;;) {
 
-        tmp_sense = !(CONTROL_PORT_IN & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
+        tmp_sense = !(SENSE_IN_PORT & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
         if (tmp_sense != cassette_sense) {
             cassette_sense = tmp_sense;
             if (cassette_sense) {
@@ -113,13 +113,13 @@ int main(void) {
         if (pulse_buf_ovf) {
             SET_CASSETTE_SENSE;
             for (uint8_t blink = 0; blink < 5; blink++) {
-                CONTROL_PORT_OUT |= 1 << LED_PIN;
+                LED_PORT |= 1 << LED_PIN;
                 _delay_ms(100);
-                CONTROL_PORT_OUT &= ~(1 << LED_PIN);
+                LED_PORT &= ~(1 << LED_PIN);
                 _delay_ms(100);
             }
         } else {
-            CONTROL_PORT_OUT &= ~(1 << LED_PIN);
+            LED_PORT &= ~(1 << LED_PIN);
         }
     }
 }

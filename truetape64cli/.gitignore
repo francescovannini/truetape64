@@ -1,0 +1,6 @@
+/venv/
+*.txt
+*.tap
+/dist/
+/build/
+/truetape64cli.egg-info/
