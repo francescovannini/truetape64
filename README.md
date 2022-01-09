@@ -90,7 +90,7 @@ The Datassette READ line is fed directly into PD6/ICP of the uC. This pin is the
 The clock for the Timer/Counter1 is obtained by dividing by 8 the main clock, which is provided by the 16MHz crystal, giving a 2MHz sample rate. The C64 PAL clock (which is the default in the TAP format) is 985248Hz, so we are more than twice as fast. This should be more than enough to sample tapes for the NTSC model too (which runs at 1.023MHz) although this would probably require a little fix in the Python code. I have no NTSC tapes so I can't test this.
 
 
-The SENSE line from the Datassette is essentially the output of a microswitch which is closed when one of the buttons on the Datassette is pressed. This is what makes the C64 detect that you "PRESSed PLAY ON TAPE". We capture this event with the micro and forward it to the Python client via the CTS line of the serial port hooked to PD2.
+The SENSE line from the Datassette is essentially the output of a microswitch which is closed when one of the buttons on the Datassette is pressed. This is what makes the C64 detect that you "PRESSed PLAY ON TAPE". We capture this event with the micro and forward it to the Python client via the CTS line of the serial port hooked to PD3.
 
 The led is there to signal "buffer overflow" conditions, which should normally never happen. A buffer overflow happens if the data rate from the tape exceeds the data rate of the serial port. We run the serial port at 250Kbps which should be more than enough for most tapes; however, since there is no hardware or software signaling implemented to notify the Python client that an overflow happened, you need to check this led at the end of the dump. If it had turned on, reset the device and try again.
 
@@ -129,4 +129,8 @@ See the [README](./cli/) included with the tool for further instructions.
 
 ## License
 [GPLv3](./LICENSE)
+
+## As seen on Hackaday
+
+This project has been featured on [Hackaday](https://hackaday.com/2021/05/10/truetape64-is-a-pc-interface-for-your-c64-datasette/)
 
