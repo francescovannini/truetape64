@@ -16,10 +16,52 @@ def verify_checksum(buf):
 
     checksum = checksum % 256
 
-    if buf[3] != checksum:
+    if buf[len(buf) - 1] != checksum:
         return False
 
     return True
+
+
+def update_checksum(buf):
+    checksum = 64
+    for bi in range(len(buf) - 1):
+        checksum = checksum + buf[bi]
+
+    checksum = checksum % 256
+
+    buf[len(buf) - 1] = checksum
+    return buf
+
+
+def test_serial(serial_device="/dev/ttyUSB4"):
+    try:
+        ser = serial.Serial(serial_device, baudrate=250000, timeout=0)
+    except (FileNotFoundError, BrokenPipeError, serial.serialutil.SerialException):
+        log.error(f"Cannot open {serial_device}. Be sure it exists and it's connected to the FTDI serial adapter")
+        sys.exit(1)
+
+    buffer = bytearray()
+
+    while True:
+
+        try:
+            b = ser.read()
+        except OSError:
+            logging.error("Unrecoverable error while reading from serial device. Aborting")
+            sys.exit(1)
+
+        if len(b) == 0:
+            time.sleep(0.1)
+            continue
+
+        buffer.append(b[0])
+
+        if len(buffer) == 5:
+            if verify_checksum(buffer):
+                print("OK", buffer.hex(' '))
+                buffer = bytearray()
+            else:
+                del buffer[0]
 
 
 def dump(serial_device, output_file):
@@ -80,8 +122,9 @@ def dump(serial_device, output_file):
             continue
 
         buffer.append(b[0])
-        if len(buffer) == 4:
+        if len(buffer) == 5:
             if verify_checksum(buffer):
+                del buffer[0]
                 counter_cycles = buffer[0] + buffer[1] * 0xFF + buffer[2] * 0xFFFF  # 2MHz clock of TC1 via /8 prescaler
                 counter_cycles_64 = counter_cycles / 2000000 * 985248  # .98MHz C64 clock conversion
                 buffer.clear()
@@ -161,6 +204,7 @@ def run(argv):
         help(True)
 
     dump(serial_device, output_file)
+    # test_serial(serial_device)
 
 
 def main():
