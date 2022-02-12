@@ -10,9 +10,11 @@
 #include "main.h"
 #include "msgbuffer.h"
 
-volatile uint8_t tm_overflows;
+volatile uint32_t tm_counter;
 volatile bool cassette_sense = false;
 volatile bool error_status = false;
+
+volatile msg_t next_msg;
 
 volatile msgbuffer_t recv_buf;
 volatile msgbuffer_t send_buf;
@@ -23,12 +25,13 @@ volatile uint8_t serial_rx_buf_count;
 volatile uint8_t serial_tx_buf[sizeof(msg_t)];
 volatile int8_t serial_tx_buf_pos = -1;
 
-inline uint8_t compute_checksum(volatile const uint8_t *buf, volatile const uint8_t buf_len) {
-    uint8_t checksum = 64;
-    for (uint8_t i = 0; i < buf_len; i++) {
-        checksum += buf[i];
-    }
-    return checksum;
+inline void update_checksum(volatile msg_t *msg) {
+    uint8_t *msg_ptr = (uint8_t *) msg;
+    msg->checksum = 8;
+    msg->checksum = msg->checksum + (msg_ptr[0] % 64) % 64;
+    msg->checksum = msg->checksum + (msg_ptr[1] % 64) % 64;
+    msg->checksum = msg->checksum + (msg_ptr[2] % 64) % 64;
+    msg->checksum = msg->checksum + ((msg_ptr[3] >> 2) % 64) % 64;
 }
 
 // Serial has received one byte
@@ -37,26 +40,25 @@ ISR(USART_RX_vect) {
         serial_rx_buf[serial_rx_buf_count] = UDR;
         serial_rx_buf_count++;
     } else { // RX buffer is full and should contain a message a this point, so next byte is the checksum
-        if (compute_checksum(&serial_rx_buf[0], sizeof(msg_t)) == UDR) { // Message is valid
-            error_status = !msgbuffer_push(&recv_buf, (msg_t *) &serial_rx_buf);
-        }
+//        if (compute_checksum(&serial_rx_buf[0], sizeof(msg_t)) == UDR) { // Message is valid  //FIXME !!!
+//            error_status = !msgbuffer_push(&recv_buf, (msg_t *) &serial_rx_buf);
+//        }
         serial_rx_buf_count = 0;
     }
 }
 
 // Serial is ready to send the next byte
 ISR(USART_UDRE_vect) {
-
     if (serial_tx_buf_pos >= 0) { // There is a transmission ongoing
         if (serial_tx_buf_pos < sizeof(msg_t)) { // Send next byte in TX buffer
             UDR = serial_tx_buf[serial_tx_buf_pos++];
-        } else { // No more bytes in the TX buffer, so next byte to send is the checksum
+        } else { // No more bytes in the TX buffer
             serial_tx_buf_pos = -1;
-            UDR = compute_checksum(&serial_tx_buf[0], sizeof(msg_t));
         }
     } else {
         if (send_buf.count > 0) { // Pops next message from ring buffer, writes it into the TX buffer
             if (msgbuffer_pop(&send_buf, (msg_t *) &serial_tx_buf)) {
+                update_checksum((msg_t *) &serial_tx_buf);
                 serial_tx_buf_pos = 0;
             } else {
                 error_status |= true;
@@ -69,34 +71,29 @@ ISR(USART_UDRE_vect) {
 
 // Falling edge
 ISR(TIMER1_CAPT_vect) {
-    uint16_t tmp = ICR1; //FIXME try to avoid this copy
+    tm_counter += ICR1;
     TCNT1 = 0;
-    union msg_header header;
-    header.byte_value = 0;
-    header.flags.read = 1;
-    header.flags.sense = cassette_sense > 0;
-    if ((tm_overflows > 0) || (tmp > MIN_PULSE_LEN)) {
-        error_status |= !msgbuffer_push_new(&send_buf, &header, &tm_overflows, &tmp);
+    if (tm_counter > MIN_PULSE_LEN) {
+        next_msg.header.flags.read = 1;
+        next_msg.header.flags.sense = cassette_sense > 0;
+        next_msg.data = tm_counter;
+        error_status |= !msgbuffer_push(&send_buf, &next_msg);
         UCSRB |= (1 << UDRIE);
     }
-
-    tm_overflows = 0;
+    tm_counter = 0;
 }
 
 // Timer overflow
 ISR(TIMER1_OVF_vect) {
-    const uint16_t max = 0xFFFF;
-    union msg_header header;
-    header.byte_value = 0;
-    header.flags.read = 1;
-    header.flags.sense = cassette_sense > 0;
-    if (tm_overflows < 0xFF) {
-        tm_overflows++;
-    } else {
-        error_status |= !msgbuffer_push_new(&send_buf, &header, &tm_overflows,
-                                            &max); // pulse is longer than detectable length
+    tm_counter += 0xFFFF;
+    if (tm_counter > MAX_PULSE_LEN) {
+        tm_counter = 0;
+        next_msg.header.byte_value = 0;
+        next_msg.header.flags.read = 1;
+        next_msg.header.flags.sense = cassette_sense > 0;
+        next_msg.data = MAX_PULSE_LEN;
+        error_status |= !msgbuffer_push(&send_buf, &next_msg);
         UCSRB |= (1 << UDRIE);
-        tm_overflows = 0;
     }
 }
 
@@ -136,7 +133,7 @@ int main(void) {
             (1 << TXEN);    // Enable USART transmission
 
     UCSRC = (1 << UCSZ1) | (1 << UCSZ0) |   // 8 bit
-            (0 << UPM1) | (0 << UPM0) |   // no parity
+            (0 << UPM1) | (0 << UPM0) |     // no parity
             (0 << USBS);                    // 1 stop bit
 
     // Blink when boot done
@@ -148,7 +145,7 @@ int main(void) {
     sei();
     for (;;) {
         tmp_sense = !(SENSE_IN_PINS & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
-        if (tmp_sense != cassette_sense) {
+        if (cassette_sense != tmp_sense) {
             cassette_sense = tmp_sense;
             if (cassette_sense) {
                 CLR_CASSETTE_SENSE;
@@ -164,11 +161,10 @@ int main(void) {
 
         if (error_status) {
             LED_PORT |= 1 << LED_PIN;
-            _delay_ms(500);
+            _delay_ms(100);
             LED_PORT &= ~(1 << LED_PIN);
-            _delay_ms(500);
+            _delay_ms(100);
         }
-
     }
 }
 

@@ -17,15 +17,7 @@ typedef struct { ;
 } msgbuffer_t;
 
 void msgbuffer_init(volatile msgbuffer_t *buf);
-
 bool msgbuffer_push(volatile msgbuffer_t *buf, volatile msg_t *msg);
-
-bool msgbuffer_push_new(volatile msgbuffer_t *buf,
-                        const volatile union msg_header *header,
-                        const volatile uint8_t *tm_overflow,
-                        const volatile uint16_t *tm_counter);
-
 bool msgbuffer_pop(volatile msgbuffer_t *buf, volatile msg_t *msg);
-
 
 #endif //TRUETAPE64_MSGBUFFER_H
