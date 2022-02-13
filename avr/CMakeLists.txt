@@ -10,7 +10,7 @@ SET(CMAKE_CXX_COMPILER /usr/bin/avr-g++)
 SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG")
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmcu=${MCU} -DF_CPU=${F_CPU} -Os -I. -ffunction-sections -Wl,--gc-sections -Wl,--relax -std=c99")
 
-add_executable(truetape64 main.c main.h msgbuffer.c msgbuffer.h)
+add_executable(truetape64 msgbuffer.c msgbuffer.h main.c main.h msg.c msg.h)
 
 add_custom_command(TARGET truetape64
         POST_BUILD COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/checksize.sh

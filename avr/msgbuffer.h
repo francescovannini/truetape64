@@ -1,12 +1,9 @@
-//
-// Created by francesco on 2/6/22.
-//
-
 #ifndef TRUETAPE64_MSGBUFFER_H
 #define TRUETAPE64_MSGBUFFER_H
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "msg.h"
 #include "main.h"
 
 typedef struct { ;

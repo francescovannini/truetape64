@@ -6,9 +6,9 @@
 #include <avr/interrupt.h>
 #include <stdbool.h>
 #include <util/delay.h>
-
 #include "main.h"
 #include "msgbuffer.h"
+#include "msg.h"
 
 volatile uint32_t tm_counter;
 volatile bool cassette_sense = false;
@@ -25,14 +25,8 @@ volatile uint8_t serial_rx_buf_count;
 volatile uint8_t serial_tx_buf[sizeof(msg_t)];
 volatile int8_t serial_tx_buf_pos = -1;
 
-inline void update_checksum(volatile msg_t *msg) {
-    uint8_t *msg_ptr = (uint8_t *) msg;
-    msg->checksum = 8;
-    msg->checksum = msg->checksum + (msg_ptr[0] % 64) % 64;
-    msg->checksum = msg->checksum + (msg_ptr[1] % 64) % 64;
-    msg->checksum = msg->checksum + (msg_ptr[2] % 64) % 64;
-    msg->checksum = msg->checksum + ((msg_ptr[3] >> 2) % 64) % 64;
-}
+
+
 
 // Serial has received one byte
 ISR(USART_RX_vect) {
@@ -58,7 +52,6 @@ ISR(USART_UDRE_vect) {
     } else {
         if (send_buf.count > 0) { // Pops next message from ring buffer, writes it into the TX buffer
             if (msgbuffer_pop(&send_buf, (msg_t *) &serial_tx_buf)) {
-                update_checksum((msg_t *) &serial_tx_buf);
                 serial_tx_buf_pos = 0;
             } else {
                 error_status |= true;
@@ -77,6 +70,7 @@ ISR(TIMER1_CAPT_vect) {
         next_msg.header.flags.read = 1;
         next_msg.header.flags.sense = cassette_sense > 0;
         next_msg.data = tm_counter;
+        next_msg.checksum = compute_checksum(&next_msg);
         error_status |= !msgbuffer_push(&send_buf, &next_msg);
         UCSRB |= (1 << UDRIE);
     }
@@ -92,6 +86,7 @@ ISR(TIMER1_OVF_vect) {
         next_msg.header.flags.read = 1;
         next_msg.header.flags.sense = cassette_sense > 0;
         next_msg.data = MAX_PULSE_LEN;
+        next_msg.checksum = compute_checksum(&next_msg);
         error_status |= !msgbuffer_push(&send_buf, &next_msg);
         UCSRB |= (1 << UDRIE);
     }
