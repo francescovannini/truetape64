@@ -40,7 +40,7 @@ What I've gotten so far:
 ### Theory of operation
 
 ##### Pulse length encoding
-The [TAP file format](https://ist.uwaterloo.ca/~schepers/formats/TAP.TXT) gives already some good clues about how the data is stored in the tape and what the emulators such as [VICE](https://vice-emu.sourceforge.io/) expect to find. The Datassette page from [Wikipedia](https://en.wikipedia.org/wiki/Commodore_Datasette#Encoding) is also quite clear:
+The [TAP file format specifications](https://ist.uwaterloo.ca/~schepers/formats/TAP.TXT) gives already some good clues about how the data is stored on the tape and what the emulators such as [VICE](https://vice-emu.sourceforge.io/) expect to find. The Datassette page from [Wikipedia](https://en.wikipedia.org/wiki/Commodore_Datasette#Encoding) is also quite clear:
 
 > To record physical data, the zero-crossing from positive to negative voltage of the analog signal is measured. The resulting time between these positive to negative crossings is then compared to a threshold to determine whether the time since the last crossing is short (0) or long (1).
 
@@ -50,7 +50,9 @@ This signal is then fed from the Datassette port directly into the C64 [Complex 
 * beginning of the current sine period: negative half-wave on tape, falling edge as seen by the CIA
 * end of the current sine period, positive half-wave approaching 0, falling edge as seen by the CIA
 
-If instead of feeding this signal to the CIA we feed it to a microcontroller with a fast enough clock, we could accurately capture the pulse length and send it somehow to the software running on PC side and ths is fundamentally the basic principle behind this project. 
+If instead of feeding this signal to the CIA we feed it to a microcontroller with a fast enough clock, we could accurately capture the pulse length and then send it somehow to the software running on PC side; tihs is the basic principle behind this project. 
+
+#### Clock speed
 
 But how fast this clock needs to be? The original Commodore LOAD/SAVE routines in the C64 Kernal were designed to be resilient; they used long period pulses producing a relatively low frequency sound which could be safely stored even by low grade tape, but on the other hand loading/saving time were quite long. 
 
@@ -60,7 +62,7 @@ We could run the microcontroller at the same clock speed used by the CIA, right?
 
 ##### Sending data over the PC
 
-Once the pulse length is detected we need to send it to our software counterpart running on the PC for it to assemble into the output TAP file. Our microcontroller has a serial port fast enough to cope with the bitstream coming from the tape so interfacing that with a ultra common USB adapter is quite convenient. This also provides power to the entire system via the USB port.
+Once the pulse length is detected we need to send it to our software counterpart running on the PC for it to assemble into the output TAP file. Our microcontroller has a serial port that is fast enough to cope with the bitstream coming from the tape so interfacing that with a ultra common USB adapter is quite convenient. This also provides power to the entire system via the USB port.
 
 ##### The Datassette tape motor
 
@@ -68,12 +70,12 @@ The Datassette requires two input voltages: a 5V for the TTL logic and a ~6V for
 
 To keep things simple, we opted to include a common DC-DC boost converter to take care of raising the voltage from the USB port from 5V to around 6.1V. Some similar projects use 5V for the motor, running the tape a bit slower and relying on software to compensate for this. I did not try this approach as I was aiming at accuracy but perhaps it would work good enough.
 
-### Schematic and parts
+### Schematics and parts
 
 ![schematics](assets/schematics.png)
 Parts:
 
-* Atmel ATTiny2313-20PU
+* ![Atmel ATTiny2313-20PU](http://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-2543-AVR-ATtiny2313_Datasheet.pdf)
 * 16MHz crystal
 * 33pF ceramic capacitors (2x)
 * 10KΩ resistor
@@ -88,7 +90,6 @@ Parts:
 The Datassette READ line is fed directly into PD6/ICP of the uC. This pin is the Input Capture Pin of the 16-bit Timer/Counter1 which can be programmed to generate an interrupt every time a falling edge is detected. The timer runs freely until either an overflow or a falling edge interrupt occurs. In the second case, this allows us to "timestamp" the edge with the value from the counter. 
 
 The clock for the Timer/Counter1 is obtained by dividing by 8 the main clock, which is provided by the 16MHz crystal, giving a 2MHz sample rate. The C64 PAL clock (which is the default in the TAP format) is 985248Hz, so we are more than twice as fast. This should be more than enough to sample tapes for the NTSC model too (which runs at 1.023MHz) although this would probably require a little fix in the Python code. I have no NTSC tapes so I can't test this.
-
 
 The SENSE line from the Datassette is essentially the output of a microswitch which is closed when one of the buttons on the Datassette is pressed. This is what makes the C64 detect that you "PRESSed PLAY ON TAPE". We capture this event with the micro and forward it to the Python client via the CTS line of the serial port hooked to PD3.
 
@@ -121,7 +122,7 @@ high: 0xDF
 
 ### Python CLI
 
-A simple Python tool is included in the [cli](./cli) directory. The tool opens the serial port of the FTDI adapter and monitors its CTS lines; when PLAY is pressed on the Datassette, the tool starts reading the data sent from the microcontroller. After some basic math to account for the differences in frequency between the AVR and the C64 PAL clock, the pulse length is written to the TAP file. The process continues until the CTS lines status changes; this can happen either when the tape stops or when there is a buffer overflow; in the latter case, led on the board will be flashing fast until the tape is stopped.
+A simple Python tool is included in the [cli](./cli) directory. The tool opens the serial port of the FTDI adapter and monitors its CTS line; when PLAY is pressed on the Datassette, the tool starts reading the data sent from the microcontroller. After some basic math to account for the differences in frequency between the AVR and the C64 PAL clock, the pulse length is written to the TAP file. The process continues until the CTS line status changes; this can happen either when the tape stops or when there is a buffer overflow; in the latter case, led on the board will be flashing fast until the tape is stopped.
 
 The TAP v2 file format allows for pulse length values for up to 0xFFFFFF (3 bytes). The microcontroller always sends 3 bytes for each pulse, followed by a checksum byte. The checksum is just an extra measure to ensure there is no data corruption during the transfer between the microcontroller and the FTDI adapter, for instance due to a bad solder joint.
 
@@ -133,4 +134,3 @@ See the [README](./cli/) included with the tool for further instructions.
 ## As seen on Hackaday
 
 This project has been featured on [Hackaday](https://hackaday.com/2021/05/10/truetape64-is-a-pc-interface-for-your-c64-datasette/)
-
