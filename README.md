@@ -75,7 +75,7 @@ To keep things simple, we opted to include a common DC-DC boost converter to tak
 ![schematics](assets/schematics.png)
 Parts:
 
-* ![Atmel ATTiny2313-20PU](http://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-2543-AVR-ATtiny2313_Datasheet.pdf)
+* [Atmel ATTiny2313-20PU](http://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-2543-AVR-ATtiny2313_Datasheet.pdf)
 * 16MHz crystal
 * 33pF ceramic capacitors (2x)
 * 10KΩ resistor
