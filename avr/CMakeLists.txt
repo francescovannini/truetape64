@@ -8,7 +8,7 @@ SET(CMAKE_SYSTEM_NAME Generic)
 SET(CMAKE_C_COMPILER /usr/bin/avr-gcc)
 SET(CMAKE_CXX_COMPILER /usr/bin/avr-g++)
 SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -DDEBUG")
-SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmcu=${MCU} -DF_CPU=${F_CPU} -Os -I.")
+SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mmcu=${MCU} -DF_CPU=${F_CPU} -Os -I. -ffunction-sections -Wl,--gc-sections -Wl,--relax -std=c99")
 
 add_executable(truetape64 msgqueue.c msgqueue.h main.c main.h msg.c msg.h)
 
