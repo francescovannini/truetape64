@@ -4,39 +4,34 @@
 #include <avr/io.h>
 #include <inttypes.h>
 #include <avr/interrupt.h>
-#include <stdbool.h>
 #include <util/delay.h>
+#include <stdio.h>
 #include "main.h"
-#include "msgbuffer.h"
+#include "msgqueue.h"
 #include "msg.h"
 
-volatile uint32_t tm_counter;
-volatile bool cassette_sense = false;
-volatile bool error_status = false;
+volatile flags_t error_flags;
 
-volatile msg_t next_msg;
+/* Messages received from serial and messages ready to be sent through serial are placed in these two queues */
+volatile msgqueue_t recv_q;
+volatile msgqueue_t send_q;
 
-volatile msgbuffer_t recv_buf;
-volatile msgbuffer_t send_buf;
-
+/* Serial port routines read_tape and write_tape these two buffers when sending and receiving data */
 volatile uint8_t serial_rx_buf[sizeof(msg_t)];
 volatile uint8_t serial_rx_buf_count;
-
-volatile uint8_t serial_tx_buf[sizeof(msg_t)];
+volatile uint8_t serial_tx_buf[sizeof(msg_t)]; //TODO get rid of this, read_tape directly from the queue buf, keep read_tape position in the queue struct
 volatile int8_t serial_tx_buf_pos = -1;
-
-
-
 
 // Serial has received one byte
 ISR(USART_RX_vect) {
-    if (serial_rx_buf_count < sizeof(msg_t)) {
-        serial_rx_buf[serial_rx_buf_count] = UDR;
-        serial_rx_buf_count++;
-    } else { // RX buffer is full and should contain a message a this point, so next byte is the checksum
-//        if (compute_checksum(&serial_rx_buf[0], sizeof(msg_t)) == UDR) { // Message is valid  //FIXME !!!
-//            error_status = !msgbuffer_push(&recv_buf, (msg_t *) &serial_rx_buf);
-//        }
+    serial_rx_buf[serial_rx_buf_count] = UDR;
+    serial_rx_buf_count++;
+
+    if (serial_rx_buf_count == sizeof(msg_t)) {
+        msg_t *msg = (msg_t *) &serial_rx_buf;
+        if (checksum(msg, NULL, msg, &error_flags)) {
+            msgqueue_push(&recv_q, msg, &error_flags);
+        }
         serial_rx_buf_count = 0;
     }
 }
@@ -50,77 +45,113 @@ ISR(USART_UDRE_vect) {
             serial_tx_buf_pos = -1;
         }
     } else {
-        if (send_buf.count > 0) { // Pops next message from ring buffer, writes it into the TX buffer
-            if (msgbuffer_pop(&send_buf, (msg_t *) &serial_tx_buf)) {
-                serial_tx_buf_pos = 0;
-            } else {
-                error_status |= true;
-            }
+        if (send_q.count > 0) { // Pops next message from ring buffer, writes it into the TX buffer
+            msgqueue_pop(&send_q, (msg_t *) &serial_tx_buf, &error_flags);
+            //TODO check error_detected eod_mode on queue empty? it should not fail as count has just been checked, but...
+            serial_tx_buf_pos = 0;
         } else { // Nothing else to send, disables this ISR
             UCSRB &= ~(1 << UDRIE);
         }
     }
 }
 
-// Falling edge
-ISR(TIMER1_CAPT_vect) {
+volatile uint8_t timer0_counter = 0;
+
+ISR (TIMER0_OVF_vect) {
+    if (timer0_counter == 0) {
+        if (error_flags) {
+            TGL_LED;
+        }
+    }
+    timer0_counter++;
+    timer0_counter &= 0b00000111;
+}
+
+// Create new data message to be sent to PC
+volatile msg_t tmr_tmp_msg;
+
+void send_data_msg(volatile const uint32_t *data) {
+    tmr_tmp_msg.header.byte_value = 0;
+    tmr_tmp_msg.header.flags.cassette_sense = CASSETTE_STOPPED;
+    tmr_tmp_msg.data = *data;
+    checksum(&tmr_tmp_msg, &tmr_tmp_msg, NULL, NULL);
+    msgqueue_push(&send_q, &tmr_tmp_msg, &error_flags);
+    UCSRB |= (1 << UDRIE); // Start serial transmission
+}
+
+volatile uint32_t tm_counter;
+
+ISR(TIMER1_CAPT_vect) { // Falling edge
     tm_counter += ICR1;
     TCNT1 = 0;
-    if (tm_counter > MIN_PULSE_LEN) {
-        next_msg.header.flags.read = 1;
-        next_msg.header.flags.sense = cassette_sense > 0;
-        next_msg.data = tm_counter;
-        next_msg.checksum = compute_checksum(&next_msg);
-        error_status |= !msgbuffer_push(&send_buf, &next_msg);
-        UCSRB |= (1 << UDRIE);
-    }
+//    tmr_tmp_msg.header.byte_value = 0;
+//    tmr_tmp_msg.header.error_flags.read_tape = 1;
+//    tmr_tmp_msg.header.error_flags.cassette_sense = cassette_sense > 0;
+//    tmr_tmp_msg.data = tm_counter;
+//    tmr_tmp_msg.checksum = compute_checksum(&tmr_tmp_msg);
+//    error_flags |= !msgqueue_push(&send_q, &tmr_tmp_msg);
     tm_counter = 0;
+    send_data_msg(&tm_counter);
 }
 
-// Timer overflow
-ISR(TIMER1_OVF_vect) {
+ISR(TIMER1_OVF_vect) { // Timer overflow
     tm_counter += 0xFFFF;
     if (tm_counter > MAX_PULSE_LEN) {
+        tm_counter = MAX_PULSE_LEN;
+        send_data_msg(&tm_counter);
         tm_counter = 0;
-        next_msg.header.byte_value = 0;
-        next_msg.header.flags.read = 1;
-        next_msg.header.flags.sense = cassette_sense > 0;
-        next_msg.data = MAX_PULSE_LEN;
-        next_msg.checksum = compute_checksum(&next_msg);
-        error_status |= !msgbuffer_push(&send_buf, &next_msg);
-        UCSRB |= (1 << UDRIE);
+////        tmr_tmp_msg.header.byte_value = 0;
+////        tmr_tmp_msg.header.error_flags.read_tape = 1;
+////        tmr_tmp_msg.header.error_flags.cassette_sense = cassette_sense > 0;
+////        tmr_tmp_msg.data = MAX_PULSE_LEN;
+////        tmr_tmp_msg.checksum = compute_checksum(&tmr_tmp_msg);
+////        error_flags |= !msgqueue_push(&send_q, &tmr_tmp_msg);
     }
 }
 
-int main(void) {
-    bool tmp_sense;
+volatile uint8_t eod_mode = 0;
+volatile msg_t tmr_tmp_msg;
 
-    msgbuffer_init(&recv_buf);
-    msgbuffer_init(&send_buf);
+ISR(TIMER1_COMPA_vect) {
+    if (rbi(WRITE_PINS, WRITE_PIN)) {
+        if (eod_mode == 0) {
+            msgqueue_pop(&recv_q, &tmr_tmp_msg, &error_flags);
+            eod_mode |= tmr_tmp_msg.header.flags.eod;
+            OCR1A = tmr_tmp_msg.data;
+        } else {
+            eod_mode++;
+        }
+    } else {
+        if (eod_mode == 2) {
+            TCCR1A = 0;
+            TCCR1B = 0;
+            TIMSK &= ~(1 << OCIE1A);
+        }
+    }
+}
+
+
+int main(void) {
+    msgqueue_init(&recv_q);
+    msgqueue_init(&send_q);
 
     // Status led
     LED_PORT_DDR |= 1 << LED_PIN;
 
-    // Cassette sense input, Datassette F-6 pin to PB1
+    // Write pin to Datassette normally up
+    WRITE_PORT_DDR |= 1 << WRITE_PIN;
+    WRITE_PORT |= 1 << WRITE_PIN;
+
+    // Cassette cassette_sense input, Datassette F-6 pin to PB0
     SENSE_IN_PORT_DDR &= ~(1 << SENSE_IN_PIN);
     SENSE_IN_PORT |= 1 << SENSE_IN_PIN; // Pull-up
-
-    // Cassette sense output to serial CTS
-    SENSE_OUT_PORT_DDR |= 1 << SENSE_OUT_PIN;
-    SET_CASSETTE_SENSE;
 
     // Capturing falling edges with Timer/Counter 1
     DDRD &= ~(1 << PD6); // Input on PD6
 
-    TCCR1B = (0 << ICNC1) | // Noise canceller disabled
-             (0 << ICES1) | // Capture on falling edge
-             (0 << CS12) |  //
-             (1 << CS11) |  // Prescaler CLOCK/8
-             (0 << CS10);   //
-
     // USART setup
-    UBRRL = UART_UBRR;      // Set baud rate
-    UBRRH = UART_UBRR >> 8; // Set baur rate
+    UBRRL = UART_UBRR;      // Set baud rate (low byte)
+    UBRRH = UART_UBRR >> 8; // Set baud rate (high byte)
 
     UCSRB = (1 << RXCIE) |  // Fires USART_RX_vect when USART has received a new byte
             (0 << UDRIE) |  // Fires USART_UDRE_vect when USART is ready to send next byte
@@ -131,48 +162,127 @@ int main(void) {
             (0 << UPM1) | (0 << UPM0) |     // no parity
             (0 << USBS);                    // 1 stop bit
 
-    // Blink when boot done
-    LED_PORT |= 1 << LED_PIN;
-    _delay_ms(500);
-    LED_PORT &= ~(1 << LED_PIN);
-    _delay_ms(500);
+    TIMSK = 0;
 
+    // Timer0 setup
+    TCCR0A = 0x00;
+    TCCR0B = (1 << CS02) | (1 << CS00); // Clock / 1024
+    TIMSK |= (1 << TOIE0); // Enable Timer0 interrupt
     sei();
+
+    // Blink when boot done
+    TGL_LED;
+    _delay_ms(500);
+    TGL_LED;
+    _delay_ms(500);
+
+    error_flags = 0;
+    uint8_t sm = SM_IDLE;
+    uint8_t tmp_byte;
+    msg_t tmp_msg;
+
     for (;;) {
-        tmp_sense = !(SENSE_IN_PINS & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
-        if (cassette_sense != tmp_sense) {
-            cassette_sense = tmp_sense;
-            if (cassette_sense) {
-                CLR_CASSETTE_SENSE;
-                TIMSK |= (1 << TOIE1) | // Fires TIMER1_OVF_vect when TIMER1 overflows
-                         (1 << ICIE1);  // Fires TIMER1_CAPT_vect when TIMER1 has completed a capture
-            } else {
-                TIMSK &= ~((1 << TOIE1) | // Fires TIMER1_OVF_vect when TIMER1 overflows
-                           (1 << ICIE1));  // Fires TIMER1_CAPT_vect when TIMER1 has completed a capture
-                SET_CASSETTE_SENSE;
-                error_status = false;
-            }
+        switch (sm) {
+            case SM_IDLE:
+                tmp_byte = 0;
+                msgqueue_pop(&recv_q, &tmp_msg, (flags_t *) &tmp_byte);
+                if (tmp_byte > 0) {
+                    break; // probably empty queue
+                }
+                if (!checksum(&tmp_msg, NULL, &tmp_msg, NULL)) {
+                    break;
+                }
+
+                if (tmp_msg.header.flags.set_mode) {
+                    if ((tmp_msg.header.flags.write_tape) && (tmp_msg.header.flags.read_tape)) { // TEST MODE
+                        tmp_msg.header.byte_value = 0;
+                        tmp_msg.checksum = 0;
+                        tmp_msg.header.flags.error_detected = 1;
+                        checksum(&tmp_msg, &tmp_msg, NULL, NULL);
+                        msgqueue_push(&send_q, &tmp_msg, &error_flags);
+                        UCSRB |= (1 << UDRIE); // Start serial transmission
+                        break;
+                    }
+
+                    if (tmp_msg.header.flags.write_tape) {
+                        sm = SM_BEGIN_WRITE;
+                        break;
+                    }
+                }
+
+                break;
+
+            case SM_BEGIN_WRITE:
+                // Wait until REC+PLAY is pressed
+                while (CASSETTE_STOPPED) { _delay_us(1000); }
+
+                // Request data to fill queue and wait until queue is full
+                tmp_msg.header.byte_value = 0;
+                tmp_msg.header.flags.cassette_sense = 1;
+                tmp_msg.data = MSGQ_SIZE - msgqueue_count(&recv_q);
+                checksum(&tmp_msg, &tmp_msg, NULL, NULL);
+                msgqueue_push(&send_q, &tmp_msg, &error_flags);
+                UCSRB |= (1 << UDRIE); // Start serial transmission
+                while (msgqueue_count(&recv_q) < MSGQ_SIZE) { _delay_us(1000); }
+
+                // Pop first message and feed pulse length to the timer
+                msgqueue_pop(&recv_q, &tmp_msg, &error_flags);
+                OCR1A = tmp_msg.data;
+
+                // Setup TIMER1
+                TCCR1B = (0 << ICNC1) | // Noise canceller disabled
+                         (0 << CS12) |  //
+                         (1 << CS11) |  // Prescaler CLOCK/8
+                         (0 << CS10) |  //
+                         (1 << WGM13) | // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+                         (1 << WGM12);  // * Waveform Generator Mode 15 (table 45, page 106 of datasheet)    *
+                TCCR1A = (1 << WGM11) | // * Fast PWM, TOP=OCR1A, Update OCR1A at TOP, TOV1 flag set at TOP  *
+                         (1 << WGM10) | // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+                         (0 << COM1A1) |// Compare Output Mode: Clear OC1A on Compare Match when upcounting
+                         (1 << COM1A0); //                      Set OC1A on Compare Match when downcounting
+
+                TIMSK |= (1 << OCIE1A);
+                WRITE_PORT &= ~(1 << WRITE_PIN);
+                eod_mode = 0;
+                sm = SM_WRITE;
+                break;
+
+            case SM_WRITE:
+                do {
+                    _delay_us(10000);
+                    //TODO request more buffers
+                } while (rbi(TIMSK, OCIE1A));
+                _delay_us(1000000); // Trailing low level (needed?)
+                WRITE_PORT_DDR |= 1 << WRITE_PIN;
+                WRITE_PORT |= 1 << WRITE_PIN;
+                TGL_LED;
+                sm = SM_INITIATE_RESET;
+                break;
+
+            case SM_INITIATE_RESET:
+            default:
+                while (1); //loop
         }
 
-        if (error_status) {
-            LED_PORT |= 1 << LED_PIN;
-            _delay_ms(100);
-            LED_PORT &= ~(1 << LED_PIN);
-            _delay_ms(100);
-        }
+
+//        tmp_sense = !(SENSE_IN_PINS & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
+//        if (cassette_sense != tmp_sense) {
+//            cassette_sense = tmp_sense;
+//            if (cassette_sense) {
+//                CLR_CASSETTE_SENSE;
+//                TIMSK |= (1 << TOIE1) | // Fires TIMER1_OVF_vect when TIMER1 overflows
+//                         (1 << ICIE1);  // Fires TIMER1_CAPT_vect when TIMER1 has completed a capture
+//            } else {
+//                TIMSK &= ~((1 << TOIE1) | // Fires TIMER1_OVF_vect when TIMER1 overflows
+//                           (1 << ICIE1));  // Fires TIMER1_CAPT_vect when TIMER1 has completed a capture
+//                SET_CASSETTE_SENSE;
+//                error_flags = false;
+//            }
+//        }
+
     }
+
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -213,10 +323,10 @@ int main(void) {
 //    // Status led
 //    LED_PORT_DDR |= 1 << LED_PIN;
 //
-//    // USART init
+//    // USART set_mode
 //    UBRRL = UART_UBRR;
 //    UBRRH = UART_UBRR >> 8;
-//    UCSRB = (1 << RXEN) | (1 << TXEN) | (0 << U2X); // Enable RX and TX, disable 2X mode
+//    UCSRB = (1 << RXEN) | (1 << TXEN) | (0 << U2X); // Enable RX and TX, disable 2X set_mode
 //    UCSRC = (0 << USBS) | (1 << UCSZ1) | (1 << UCSZ0); // 8, N, 1
 //
 //    // Blink when boot done
@@ -249,21 +359,21 @@ int main(void) {
 //    // Status led
 //    LED_PORT_DDR |= 1 << LED_PIN;
 //
-//    // Cassette sense input, Datassette F-6 pin to PB1
+//    // Cassette cassette_sense input, Datassette F-6 pin to PB1
 //    SENSE_IN_PORT_DDR &= ~(1 << SENSE_IN_PIN);
 //    SENSE_IN_PORT |= 1 << SENSE_IN_PIN; // Pull-up
 //
 //    // Capturing falling edges with Timer/Counter 1
 //    DDRD &= ~(1 << PD6); // Input on PD6
 //    TIMSK |= (1 << ICIE1) |
-//             (1 << TOIE1);     //Set capture interrupt and overflow interrupt //FIXME this only is read mode
+//             (1 << TOIE1);     //Set capture interrupt and overflow interrupt //FIXME this only is read_tape set_mode
 //    TCCR1B = (0 << ICNC1) | (0 << ICES1)
 //             | (0 << CS12) | (1 << CS11) | (0 << CS10);  //Set capture falling edge, /8 prescaler
 //
-//    // USART init
+//    // USART set_mode
 //    UBRRL = UART_UBRR;
 //    UBRRH = UART_UBRR >> 8;
-//    UCSRB = (1 << RXEN) | (1 << TXEN) | (0 << U2X); // Enable RX and TX, disable 2X mode
+//    UCSRB = (1 << RXEN) | (1 << TXEN) | (0 << U2X); // Enable RX and TX, disable 2X set_mode
 //    UCSRC = (0 << USBS) | (1 << UCSZ1) | (1 << UCSZ0); // 8, N, 1
 //
 //    // Blink when boot done

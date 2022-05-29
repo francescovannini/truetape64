@@ -11,5 +11,5 @@ else
   cd cmake-build-release || exit 1
 fi
 
-avrdude -c usbtiny -pt2313 -U flash:w:$target_hex -U lfuse:w:0xff:m -U hfuse:w:0xdf:m -U efuse:w:0xff:m
+avrdude -c usbtiny -pt2313 -V -U flash:w:$target_hex -U lfuse:w:0xff:m -U hfuse:w:0xdf:m -U efuse:w:0xff:m
 
