@@ -5,7 +5,7 @@
 
 #define MSGQ_SIZE           6
 #define MSGQ_REQ_THRESH     1
-#define MAX_PULSE_LEN       67108863    // Only 26 bits are available for message data so 2^26 - 1
+#define MAX_PULSE_LEN       ((2 ^ 24) - 1)
 #define MIN_PULSE_LEN       5
 
 #define UART_UBRR           3           // 250kbps at 16Mhz

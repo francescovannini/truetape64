@@ -19,10 +19,7 @@ union msg_header {
 
 typedef struct {
     union msg_header header;
-    uint32_t data: 26;
-    uint8_t checksum: 6;
+    uint32_t data;
 } msg_t;
-
-bool checksum(volatile msg_t *msg, volatile msg_t *msg_cs_update, volatile msg_t *msg_cs_compare, volatile flags_t *fl);
 
 #endif //TRUETAPE64_MSG_H

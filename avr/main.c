@@ -25,16 +25,16 @@ volatile uint8_t awaiting_msgs = 0; //there is a request for these msgs but they
 
 // Serial has received one byte
 ISR(USART_RX_vect) {
+    error_flags |= rbi(UCSRA, UPE)
+            << FL_ERR_CHECKSUM; //TODO should we check the framing bit as well? it seems no as from datasheet "The FE bit is zero when the stop bit of received data is one. Always set this bit to zero when writing to UCSRA."
     serial_rx_buf[serial_rx_buf_count] = UDR;
     serial_rx_buf_count++;
 
     if (serial_rx_buf_count == sizeof(msg_t)) {
         msg_t *msg = (msg_t *) &serial_rx_buf;
-        if (checksum(msg, NULL, msg, &error_flags)) {
-            msgqueue_push(&recv_q, msg, &error_flags);
-            if (awaiting_msgs) {
-                awaiting_msgs--;
-            }
+        msgqueue_push(&recv_q, msg, &error_flags);
+        if (awaiting_msgs) {
+            awaiting_msgs--;
         }
         serial_rx_buf_count = 0;
     }
@@ -78,7 +78,6 @@ void __attribute__ ((noinline)) send_data_msg(volatile const uint32_t *data) {
     tmr_tmp_msg.header.byte_value = 0;
     tmr_tmp_msg.header.fields.cassette_sense = CASSETTE_STOPPED;
     tmr_tmp_msg.data = *data;
-    checksum(&tmr_tmp_msg, &tmr_tmp_msg, NULL, NULL);
     msgqueue_push(&send_q, &tmr_tmp_msg, &error_flags);
     UCSRB |= (1 << UDRIE); // Start serial transmission
 }
@@ -103,6 +102,7 @@ ISR(TIMER1_OVF_vect) { // Timer overflow
 
 volatile uint8_t eod_mode = 0;
 volatile msg_t tmr_tmp_msg;
+
 ISR(TIMER1_COMPA_vect) {
     if (rbi(WRITE_PINS, WRITE_PIN)) { // Level is high
         if (eod_mode == 0) {
@@ -183,15 +183,10 @@ int main(void) {
                     _delay_us(1000);
                     break; // probably empty queue
                 }
-                if (!checksum(&tmp_msg, NULL, &tmp_msg, NULL)) {
-                    break;
-                }
 
                 if (tmp_msg.header.fields.set_mode) {
                     if ((tmp_msg.header.fields.write_tape) && (tmp_msg.header.fields.read_tape)) { // TEST MODE
                         tmp_msg.header.byte_value = 0;
-                        tmp_msg.checksum = 0;
-                        checksum(&tmp_msg, &tmp_msg, NULL, NULL);
                         msgqueue_push(&send_q, &tmp_msg, &error_flags);
                         UCSRB |= (1 << UDRIE); // Start serial transmission
                         break;
@@ -221,7 +216,6 @@ int main(void) {
                 tmp_msg.header.fields.cassette_sense = 1;
                 tmp_msg.header.fields.error_detected = error_flags > 0;
                 tmp_msg.data = MSGQ_SIZE - msgqueue_count(&recv_q);
-                checksum(&tmp_msg, &tmp_msg, NULL, NULL);
                 msgqueue_push(&send_q, &tmp_msg, &error_flags);
                 UCSRB |= (1 << UDRIE); // Start serial transmission
 
@@ -264,7 +258,6 @@ int main(void) {
                         } else {
                             tmp_msg.data = tmp_byte;
                         }
-                        checksum(&tmp_msg, &tmp_msg, NULL, NULL);
                         msgqueue_push(&send_q, &tmp_msg, &error_flags);
                         UCSRB |= (1 << UDRIE); // Start serial transmission
                         awaiting_msgs += tmp_byte;

@@ -64,7 +64,6 @@ class Msg:
             self.eod = (msg[0] & 0b00001000) >> 3
             self.sense = (msg[0] & 0b00010000) >> 4
             self.error = (msg[0] & 0b00100000) >> 5
-            msg[4] = msg[4] & 0b00000011
             self.data = int.from_bytes(msg[1:], byteorder='little', signed=False)
             return " ".join(map("{0:08b}".format, ba))
         else:
@@ -79,34 +78,35 @@ class Msg:
         header = header | ((self.error > 0) << 5)
         msg = bytearray(header.to_bytes(1, 'little', signed=False))
         msg.extend(self.data.to_bytes(4, 'little', signed=False))
-        msg[4] = msg[4] | (compute_checksum(msg) << 2)
         return msg, " ".join(map("{0:08b}".format, msg))
 
     def to_string(self):
         return f"Set:{self.set_mode} Read:{self.read_tape} Write:{self.write_tape} EOD:{self.eod} Sense: {self.sense} - Error: {self.error} - Data: {self.data}"
 
 
-def compute_checksum(buf):
-    computed = 8
-    for bi in range(len(buf) - 1):
-        computed = (computed + buf[bi] & 0x3f) & 0x3f
-
-    computed = (computed + (buf[len(buf) - 1] & 0b00000011)) & 0x3f
-
-    return computed
-
-
-def verify_checksum(buf):
-    received = buf[len(buf) - 1] >> 2
-    computed = compute_checksum(buf)
-    if computed != received:
-        log.error(f"Checksum error: computed {computed}, received {received}")
-        for bi in range(len(buf)):
-            log.error(f"0x{buf[bi]:02x}")
-
-        return False
-
-    return True
+# def compute_checksum(buf):
+#     computed = 8
+#     for bi in range(len(buf) - 1):
+#         computed = (computed + buf[bi] & 0x3f) & 0x3f
+#
+#     computed = (computed + (buf[len(buf) - 1] & 0b00000011)) & 0x3f
+#
+#     return computed
+#
+#
+# def verify_checksum(buf):
+#     return True
+#
+#     # received = buf[len(buf) - 1] >> 2
+#     # computed = compute_checksum(buf)
+#     # if computed != received:
+#     #     log.error(f"Checksum error: computed {computed}, received {received}")
+#     #     for bi in range(len(buf)):
+#     #         log.error(f"0x{buf[bi]:02x}")
+#     #
+#     #     return False
+#     #
+#     # return True
 
 
 def test_serial(serial_device="/dev/ttyUSB3"):
@@ -117,15 +117,13 @@ def test_serial(serial_device="/dev/ttyUSB3"):
         sys.exit(1)
 
     # Test message
-    max_pulse_len = 67108863
+    max_pulse_len = 2 ** 32 - 1
     msg = Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, data=max_pulse_len)
     ba, debug_bits = msg.to_bytearray()
     print("S", debug_bits, msg.to_string())
     ser.write(ba)
 
     ba = bytearray(ser.read(5))
-    if not verify_checksum(ba):
-        return
 
     msg = Msg()
     print("R", msg.from_bytearray(ba), msg.to_string())
@@ -146,8 +144,6 @@ def test_serial(serial_device="/dev/ttyUSB3"):
 
         # Get available space in queue
         ba = bytearray(ser.read(5))
-        if not verify_checksum(ba):
-            return
 
         qsizemsg = Msg()
         debug_bits = qsizemsg.from_bytearray(ba)
@@ -176,122 +172,122 @@ def test_serial(serial_device="/dev/ttyUSB3"):
     ser.close()
 
 
-def dump(serial_device, output_file):
-    try:
-        ser = serial.Serial(serial_device, baudrate=250000, timeout=0)
-    except (FileNotFoundError, BrokenPipeError, serial.serialutil.SerialException):
-        log.error(f"Cannot open {serial_device}. Be sure it exists and it's connected to the FTDI serial adapter")
-        sys.exit(1)
-
-    try:
-        tapfile = open(output_file, "w+b")
-    except (FileNotFoundError, PermissionError):
-        log.error(f"Cannot write to {output_file}.")
-        sys.exit(1)
-
-    tap_header = b'\x43\x36\x34\x2D\x54\x41\x50\x45\x2D\x52\x41\x57\x01\x00\x00\x00\x00\x00\x00\x00'
-    tapfile.write(tap_header)
-
-    logging.info("PRESS PLAY ON TAPE")
-    try:
-        while not ser.getCTS():
-            time.sleep(0.01)
-            continue
-    except OSError:
-        logging.error("Unrecoverable error while reading from serial device. Aborting")
-        sys.exit(1)
-
-    logging.info("Dumping started")
-
-    data_len = 0
-    pulses = 0
-    shortest_pulse = None
-    longest_pulse = None
-    buffer = bytearray()
-    checksum_errors = 0
-    last_msg_ts = 0
-    dumping = True
-
-    msglen = 5
-
-    while dumping:
-
-        if time.time() - last_msg_ts > 5:
-            last_msg_ts = time.time()
-            if pulses > 0:
-                logging.info(
-                    f"Dumped {pulses} pulses, {checksum_errors} serial errors, min/max len {shortest_pulse}/{longest_pulse}")
-            else:
-                logging.info(f"No pulses detected yet, {checksum_errors} serial errors")
-
-        try:
-            b = ser.read()
-        except OSError:
-            logging.error("Unrecoverable error while reading from serial device. Aborting")
-            sys.exit(1)
-
-        if len(b) == 0:
-            if not ser.getCTS():
-                dumping = False
-                continue
-            time.sleep(0.1)
-            continue
-
-        buffer.append(b[0])
-        if len(buffer) == msglen:
-            if verify_checksum(buffer):  # FIXME
-                # del buffer[0]  # FIXME this is the new header, not used for the moment
-                counter_cycles = buffer[1] + buffer[2] * 0xFF + buffer[3] * 0xFFFF + (buffer[4] & 0b00000011) * 0xFFFFFF
-
-                # AVR clock runs at 16MHz but the counter is clocked through a /8 prescaler
-                # so the sampling frequency of the device is 2MHz
-                # The the CIA runs at C64 clock speed, which for PAL version is 985248Hz
-                #
-                cia_cycles = counter_cycles / 2000000 * 985248
-
-                # TAP version 1 can encode pulse length using either one or three bytes
-                # If the pulse length is less than 255 when divided by 8, then one byte is used
-                # Otherwise 3 bytes are used but in this case the length is not divided by 8
-                tap_pulse_len = int(round(cia_cycles / 8))
-                if tap_pulse_len > 255:  # Will need 3 bytes, no /8 division, better accuracy
-                    tap_pulse_len = int(round(cia_cycles))
-                    if tap_pulse_len > 2 ** 24 - 1:  # 24 bits, 3 bytes, maximum allowed by TAP file
-                        tap_pulse_len = 2 ** 24 - 1
-
-                buffer.clear()
-                pulses += 1
-
-                if shortest_pulse:
-                    shortest_pulse = min(shortest_pulse, tap_pulse_len)
-                else:
-                    shortest_pulse = tap_pulse_len
-
-                if longest_pulse:
-                    longest_pulse = max(longest_pulse, tap_pulse_len)
-                else:
-                    longest_pulse = tap_pulse_len
-
-                try:
-                    if tap_pulse_len > 255:
-                        data_len += tapfile.write(b'\00')
-                        data_len += tapfile.write(tap_pulse_len.to_bytes(3, byteorder="little", signed=False))
-                    else:
-                        data_len += tapfile.write(tap_pulse_len.to_bytes(1, byteorder="little", signed=False))
-                except OSError:
-                    logging.error("Unrecoverable error while writing to file. Aborting")
-                    sys.exit(1)
-
-            else:
-                del buffer[0]
-                checksum_errors += 1
-
-    tapfile.seek(16)
-    tapfile.write(data_len.to_bytes(4, byteorder="little", signed=False))
-    tapfile.close()
-
-    logging.info(
-        f"Dumped {pulses} pulses, {checksum_errors} serial errors, min/max len {shortest_pulse}/{longest_pulse}")
-    logging.info("Check led status on device")
+# def dump(serial_device, output_file):
+# try:
+#     ser = serial.Serial(serial_device, baudrate=250000, timeout=0)
+# except (FileNotFoundError, BrokenPipeError, serial.serialutil.SerialException):
+#     log.error(f"Cannot open {serial_device}. Be sure it exists and it's connected to the FTDI serial adapter")
+#     sys.exit(1)
+#
+# try:
+#     tapfile = open(output_file, "w+b")
+# except (FileNotFoundError, PermissionError):
+#     log.error(f"Cannot write to {output_file}.")
+#     sys.exit(1)
+#
+# tap_header = b'\x43\x36\x34\x2D\x54\x41\x50\x45\x2D\x52\x41\x57\x01\x00\x00\x00\x00\x00\x00\x00'
+# tapfile.write(tap_header)
+#
+# logging.info("PRESS PLAY ON TAPE")
+# try:
+#     while not ser.getCTS():
+#         time.sleep(0.01)
+#         continue
+# except OSError:
+#     logging.error("Unrecoverable error while reading from serial device. Aborting")
+#     sys.exit(1)
+#
+# logging.info("Dumping started")
+#
+# data_len = 0
+# pulses = 0
+# shortest_pulse = None
+# longest_pulse = None
+# buffer = bytearray()
+# checksum_errors = 0
+# last_msg_ts = 0
+# dumping = True
+#
+# msglen = 5
+#
+# while dumping:
+#
+#     if time.time() - last_msg_ts > 5:
+#         last_msg_ts = time.time()
+#         if pulses > 0:
+#             logging.info(
+#                 f"Dumped {pulses} pulses, {checksum_errors} serial errors, min/max len {shortest_pulse}/{longest_pulse}")
+#         else:
+#             logging.info(f"No pulses detected yet, {checksum_errors} serial errors")
+#
+#     try:
+#         b = ser.read()
+#     except OSError:
+#         logging.error("Unrecoverable error while reading from serial device. Aborting")
+#         sys.exit(1)
+#
+#     if len(b) == 0:
+#         if not ser.getCTS():
+#             dumping = False
+#             continue
+#         time.sleep(0.1)
+#         continue
+#
+#     buffer.append(b[0])
+#     if len(buffer) == msglen:
+#         if verify_checksum(buffer):  # FIXME
+#             # del buffer[0]  # FIXME this is the new header, not used for the moment
+#             counter_cycles = buffer[1] + buffer[2] * 0xFF + buffer[3] * 0xFFFF + (buffer[4] & 0b00000011) * 0xFFFFFF
+#
+#             # AVR clock runs at 16MHz but the counter is clocked through a /8 prescaler
+#             # so the sampling frequency of the device is 2MHz
+#             # The the CIA runs at C64 clock speed, which for PAL version is 985248Hz
+#             #
+#             cia_cycles = counter_cycles / 2000000 * 985248
+#
+#             # TAP version 1 can encode pulse length using either one or three bytes
+#             # If the pulse length is less than 255 when divided by 8, then one byte is used
+#             # Otherwise 3 bytes are used but in this case the length is not divided by 8
+#             tap_pulse_len = int(round(cia_cycles / 8))
+#             if tap_pulse_len > 255:  # Will need 3 bytes, no /8 division, better accuracy
+#                 tap_pulse_len = int(round(cia_cycles))
+#                 if tap_pulse_len > 2 ** 24 - 1:  # 24 bits, 3 bytes, maximum allowed by TAP file
+#                     tap_pulse_len = 2 ** 24 - 1
+#
+#             buffer.clear()
+#             pulses += 1
+#
+#             if shortest_pulse:
+#                 shortest_pulse = min(shortest_pulse, tap_pulse_len)
+#             else:
+#                 shortest_pulse = tap_pulse_len
+#
+#             if longest_pulse:
+#                 longest_pulse = max(longest_pulse, tap_pulse_len)
+#             else:
+#                 longest_pulse = tap_pulse_len
+#
+#             try:
+#                 if tap_pulse_len > 255:
+#                     data_len += tapfile.write(b'\00')
+#                     data_len += tapfile.write(tap_pulse_len.to_bytes(3, byteorder="little", signed=False))
+#                 else:
+#                     data_len += tapfile.write(tap_pulse_len.to_bytes(1, byteorder="little", signed=False))
+#             except OSError:
+#                 logging.error("Unrecoverable error while writing to file. Aborting")
+#                 sys.exit(1)
+#
+#         else:
+#             del buffer[0]
+#             checksum_errors += 1
+#
+# tapfile.seek(16)
+# tapfile.write(data_len.to_bytes(4, byteorder="little", signed=False))
+# tapfile.close()
+#
+# logging.info(
+#     f"Dumped {pulses} pulses, {checksum_errors} serial errors, min/max len {shortest_pulse}/{longest_pulse}")
+# logging.info("Check led status on device")
 
 
 def help(exit_error, message=None):
@@ -342,11 +338,9 @@ def run(argv):
 
 
 def main():
-
     # ef = ErrorFlags(3)
     # ef.print()
     # return
-
 
     try:
         run(sys.argv[1:])
