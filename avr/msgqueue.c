@@ -51,5 +51,6 @@ uint8_t msgqueue_count(volatile msgqueue_t *buf) {
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         return buf->count;
     }
+    return buf->count;
 }
 
