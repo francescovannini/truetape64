@@ -12,8 +12,8 @@ union msg_header {
         uint8_t write_tape: 1;      // 2 : PC -> TT64: TT64 will send all next msgs with cassette_sense=1 and in the data the number of buffers the PC must send until a msg with cassette_sense=0 will be sent (in case tape is stopped) or eod is received, then will reset
         uint8_t eod: 1;             // 3 : PC -> TT64: End Of Data when writing tape, TT64 will reset
         uint8_t cassette_sense: 1;  // 4 : PC <- TT64: when 1, PLAY is pressed on the Datassette
-        uint8_t error_detected: 1;  // 5 : PC <- TT64: an error has been detected. The first 8 bits of the data are the error flags. TT64 needs to be reset manually.
-    } flags;
+        uint8_t error_detected: 1;  // 5 : PC <- TT64: an error has been detected. The first 8 bits of the data are the error fields. TT64 needs to be reset manually.
+    } fields;
     unsigned char byte_value;
 };
 

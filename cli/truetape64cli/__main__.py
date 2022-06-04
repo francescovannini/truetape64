@@ -10,6 +10,82 @@ log = logging.getLogger(__name__)
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 
 
+def santize_bit(in_value):
+    if isinstance(in_value, int) or isinstance(in_value, bool):
+        return int(in_value)
+    else:
+        return 0
+
+
+class ErrorFlags:
+    FL_ERR_GENERIC = 0
+    FL_ERR_QUEUE_EMPTY = 0
+    FL_ERR_QUEUE_FULL = 0
+    FL_ERR_CHECKSUM = 0
+
+    def __dir__(self):
+        return ['FL_ERR_GENERIC', 'FL_ERR_QUEUE_EMPTY', 'FL_ERR_QUEUE_FULL', 'FL_ERR_CHECKSUM']
+
+    def decode_error_flags(self, in_value):
+        for c, attr in enumerate(self.__dir__()):
+            v = (in_value >> c) & 1
+            setattr(self, attr, v)
+
+    def print(self):
+        for c, v in enumerate(self.__dir__()):
+            print(v, getattr(self, v))
+
+    def __init__(self, v=None):
+        if isinstance(v, int):
+            self.decode_error_flags(v)
+
+
+class Msg:
+
+    def __init__(self, set_mode=None, read_tape=None, write_tape=None, eod=None, sense=None, error=None, data=None):
+        self.set_mode = santize_bit(set_mode)
+        self.read_tape = santize_bit(read_tape)
+        self.write_tape = santize_bit(write_tape)
+        self.eod = santize_bit(eod)
+        self.sense = santize_bit(sense)
+        self.error = santize_bit(error)
+
+        if isinstance(data, int):
+            self.data = data
+        else:
+            self.data = 0
+
+    def from_bytearray(self, ba):
+        if isinstance(ba, bytearray):
+            msg = bytearray(ba)
+            self.set_mode = msg[0] & 0b00000001
+            self.read_tape = (msg[0] & 0b00000010) >> 1
+            self.write_tape = (msg[0] & 0b00000100) >> 2
+            self.eod = (msg[0] & 0b00001000) >> 3
+            self.sense = (msg[0] & 0b00010000) >> 4
+            self.error = (msg[0] & 0b00100000) >> 5
+            msg[4] = msg[4] & 0b00000011
+            self.data = int.from_bytes(msg[1:], byteorder='little', signed=False)
+            return " ".join(map("{0:08b}".format, ba))
+        else:
+            return None
+
+    def to_bytearray(self):
+        header = self.set_mode > 0
+        header = header | ((self.read_tape > 0) << 1)
+        header = header | ((self.write_tape > 0) << 2)
+        header = header | ((self.eod > 0) << 3)
+        header = header | ((self.sense > 0) << 4)
+        header = header | ((self.error > 0) << 5)
+        msg = bytearray(header.to_bytes(1, 'little', signed=False))
+        msg.extend(self.data.to_bytes(4, 'little', signed=False))
+        msg[4] = msg[4] | (compute_checksum(msg) << 2)
+        return msg, " ".join(map("{0:08b}".format, msg))
+
+    def to_string(self):
+        return f"Set:{self.set_mode} Read:{self.read_tape} Write:{self.write_tape} EOD:{self.eod} Sense: {self.sense} - Error: {self.error} - Data: {self.data}"
+
+
 def compute_checksum(buf):
     computed = 8
     for bi in range(len(buf) - 1):
@@ -33,71 +109,71 @@ def verify_checksum(buf):
     return True
 
 
-def encode_msg(set_mode, read_tape, write_tape, eod, data):
-    header = set_mode > 0
-    header = header | ((read_tape > 0) << 1)
-    header = header | ((write_tape > 0) << 2)
-    header = header | ((eod > 0) << 3)
-    msg = bytearray(header.to_bytes(1, 'little', signed=False))
-
-    msg.extend(data.to_bytes(4, 'little', signed=False))
-    msg[4] = msg[4] | (compute_checksum(msg) << 2)
-    return msg
-
-
-def decode_msg(in_msg):
-    msg = bytearray(in_msg)
-    set_mode = (msg[0] & 0b00000001) > 0
-    read_tape = (msg[0] & 0b00000010) > 0
-    write_tape = (msg[0] & 0b00000100) > 0
-    eod = (msg[0] & 0b00001000) > 0
-    sense = (msg[0] & 0b00010000) > 0
-    error = (msg[0] & 0b00100000) > 0
-    msg[4] = msg[4] & 0b00000011
-    data = int.from_bytes(msg[1:], byteorder='little', signed=False)
-
-    print(" ".join(map("{0:08b}".format, msg)),
-          f" | Set:{set_mode} Read:{read_tape} Write:{write_tape} EOD:{eod} Sense: {sense} - Error: {error} - Data: {data}")
-
-    return set_mode, read_tape, write_tape, eod, sense, error, data
-
-
 def test_serial(serial_device="/dev/ttyUSB3"):
     try:
-        ser = serial.Serial(serial_device, baudrate=250000)
+        ser = serial.Serial(serial_device, baudrate=500000, parity=serial.PARITY_EVEN, stopbits=serial.STOPBITS_ONE)
     except (FileNotFoundError, BrokenPipeError, serial.serialutil.SerialException):
         log.error(f"Cannot open {serial_device}. Be sure it exists and it's connected to the FTDI serial adapter")
         sys.exit(1)
 
     # Test message
     max_pulse_len = 67108863
-    msg = encode_msg(set_mode=1, read_tape=1, write_tape=1, eod=0, data=max_pulse_len)
-    ser.write(msg)
+    msg = Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, data=max_pulse_len)
+    ba, debug_bits = msg.to_bytearray()
+    print("S", debug_bits, msg.to_string())
+    ser.write(ba)
 
-    msg = bytearray(ser.read(5))
-    if not verify_checksum(msg):
+    ba = bytearray(ser.read(5))
+    if not verify_checksum(ba):
         return
 
-    _, _, _, _, _, _, data = decode_msg(msg)
-    if data != max_pulse_len:
+    msg = Msg()
+    print("R", msg.from_bytearray(ba), msg.to_string())
+
+    if msg.data != max_pulse_len:
         print("data mismatch")
         return
 
-    # Prepare to write
-    msg = encode_msg(set_mode=1, read_tape=0, write_tape=1, eod=0, data=0)
-    decode_msg(msg)
-    ser.write(msg)
+    # Begin write
+    msg = Msg(set_mode=1, read_tape=0, write_tape=1, eod=0, data=0)
+    ba, debug_bits = msg.to_bytearray()
+    print("S", debug_bits, msg.to_string())
+    ser.write(ba)
+    counter = 0
+    error_detected = 0
+    pulse_len = 2048
+    while True:
 
-    msg = bytearray(ser.read(5))
-    if not verify_checksum(msg):
-        return
+        # Get available space in queue
+        ba = bytearray(ser.read(5))
+        if not verify_checksum(ba):
+            return
 
-    # Write data
-    _, _, _, _, _, _, data = decode_msg(msg)
-    for i in range(data):
-        msg = encode_msg(set_mode=0, read_tape=0, write_tape=0, eod=(i == data - 1), data=(i + 1) * 128)
-        ser.write(msg)
-        decode_msg(msg)
+        qsizemsg = Msg()
+        debug_bits = qsizemsg.from_bytearray(ba)
+        print("R", debug_bits, qsizemsg.to_string())
+
+        # Read the error flags
+        if qsizemsg.error:
+            print("Error bit set at message ", counter)
+            ef = ErrorFlags(qsizemsg.data >> 8)
+            ef.print()
+            break
+
+        # Send data to fill queue
+        buf = bytearray()
+        for i in range(qsizemsg.data):
+            # msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=(i == qsizemsg.data - 1), data=(i + 1) * 128)
+            msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=0, data=pulse_len)
+            ba, debug_bits = msg.to_bytearray()
+            print("S", debug_bits, msg.to_string())
+            buf.extend(ba)
+            counter += 1
+
+        ser.write(buf)
+        # pulse_len -= 1
+
+    ser.close()
 
 
 def dump(serial_device, output_file):
@@ -266,6 +342,12 @@ def run(argv):
 
 
 def main():
+
+    # ef = ErrorFlags(3)
+    # ef.print()
+    # return
+
+
     try:
         run(sys.argv[1:])
     except KeyboardInterrupt:

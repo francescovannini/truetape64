@@ -4,7 +4,7 @@
 #include <inttypes.h>
 
 #define MSGQ_SIZE           6
-#define MSGQ_REQ_THRESH     3
+#define MSGQ_REQ_THRESH     1
 #define MAX_PULSE_LEN       67108863    // Only 26 bits are available for message data so 2^26 - 1
 #define MIN_PULSE_LEN       5
 
@@ -39,15 +39,18 @@
 #define CLR_LED             LED_PORT &= ~(1 << LED_PIN)
 #define TGL_LED             LED_PORT ^= 1 << LED_PIN
 
-#define FL_ERR_QUEUE_EMPTY  0
-#define FL_ERR_QUEUE_FULL   1
-#define FL_ERR_CHECKSUM     2
-#define FL_ERR_GENERIC      6
+#define FL_ERR_GENERIC      0
+#define FL_ERR_QUEUE_EMPTY  1
+#define FL_ERR_QUEUE_FULL   2
+#define FL_ERR_CHECKSUM     3
 
 #define SM_IDLE             0
 #define SM_BEGIN_WRITE      1
 #define SM_WRITE            2
 #define SM_END_WRITE        3
+#define SM_BEGIN_READ       4
+#define SM_READ             5
+#define SM_END_READ         6
 #define SM_INITIATE_RESET   8
 
 typedef uint8_t flags_t;
