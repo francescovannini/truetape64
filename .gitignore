@@ -1,5 +1,5 @@
-avr/cmake-build-release/*
-avr/cmake-build-debug/*
+avr/cmake-build-release/
+avr/cmake-build-debug/
 truetape64cli/venv
 truetape64cli/truetape64cli.egg-info
 truetape64cli/truetape64cli/__pycache__

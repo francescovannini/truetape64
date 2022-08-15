@@ -5,6 +5,8 @@
 #include <inttypes.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
+#include <util/atomic.h>
+#include <avr/wdt.h>
 #include <stdio.h>
 #include "main.h"
 #include "msgqueue.h"
@@ -16,27 +18,29 @@ volatile flags_t error_flags;
 volatile msgqueue_t recv_q;
 volatile msgqueue_t send_q;
 
-/* Serial port routines use these two buffers when sending and receiving data */
+/* Serial port routines use these two buffers when sending and receiving payload */
 volatile uint8_t serial_rx_buf[sizeof(msg_t)];
 volatile uint8_t serial_rx_buf_count;
 volatile uint8_t serial_tx_buf[sizeof(msg_t)]; //TODO get rid of this
 volatile int8_t serial_tx_buf_pos = -1;
 volatile uint8_t awaiting_msgs = 0; //there is a request for these msgs but they haven't been received yet
+volatile uint8_t cur_msg_data_pos = 0;
 
 // Serial has received one byte
 ISR(USART_RX_vect) {
     error_flags |= rbi(UCSRA, UPE)
-            << FL_ERR_CHECKSUM; //TODO should we check the framing bit as well? it seems no as from datasheet "The FE bit is zero when the stop bit of received data is one. Always set this bit to zero when writing to UCSRA."
+            << FL_ERR_CHECKSUM; //TODO should we check the framing bit as well? it seems no as from datasheet "The FE bit is zero when the stop bit of received payload is one. Always set this bit to zero when writing to UCSRA."
     serial_rx_buf[serial_rx_buf_count] = UDR;
     serial_rx_buf_count++;
 
     if (serial_rx_buf_count == sizeof(msg_t)) {
-        msg_t *msg = (msg_t *) &serial_rx_buf;
-        msgqueue_push(&recv_q, msg, &error_flags);
-        if (awaiting_msgs) {
-            awaiting_msgs--;
-        }
+        msgqueue_push(&recv_q, (msg_t *) &serial_rx_buf, &error_flags);
         serial_rx_buf_count = 0;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            if (awaiting_msgs) {
+                awaiting_msgs--;
+            }
+        }
     }
 }
 
@@ -71,31 +75,32 @@ ISR (TIMER0_OVF_vect) {
     timer0_counter &= 0b00000111;
 }
 
-// Create new data message to be sent to PC
+// Create new payload message to be sent to PC
 volatile msg_t tmr_tmp_msg;
 
-void __attribute__ ((noinline)) send_data_msg(volatile const uint32_t *data) {
-    tmr_tmp_msg.header.byte_value = 0;
-    tmr_tmp_msg.header.fields.cassette_sense = CASSETTE_STOPPED;
-    tmr_tmp_msg.data = *data;
-    msgqueue_push(&send_q, &tmr_tmp_msg, &error_flags);
-    UCSRB |= (1 << UDRIE); // Start serial transmission
-}
+//void __attribute__ ((noinline)) send_data_msg(volatile const uint32_t *payload) {
+//    tmr_tmp_msg.header.byte_value = 0;
+//    tmr_tmp_msg.header.fields.cassette_sense = CASSETTE_STOPPED;
+//    tmr_tmp_msg.payload = *payload;
+//    msgqueue_push(&send_q, &tmr_tmp_msg, &error_flags);
+//    UCSRB |= (1 << UDRIE); // Start serial transmission
+//}
 
-volatile uint32_t tm_counter;
+volatile uint32_t tm_counter; //TODO can this be smaller?
 
+//TODO these two don't work anymore, need to rewrite them using new packet format
 ISR(TIMER1_CAPT_vect) { // Falling edge
     tm_counter += ICR1;
     TCNT1 = 0;
     tm_counter = 0;
-    send_data_msg(&tm_counter);
+//    send_data_msg(&tm_counter);
 }
 
 ISR(TIMER1_OVF_vect) { // Timer overflow
     tm_counter += 0xFFFF;
     if (tm_counter > MAX_PULSE_LEN) {
         tm_counter = MAX_PULSE_LEN;
-        send_data_msg(&tm_counter);
+//        send_data_msg(&tm_counter);
         tm_counter = 0;
     }
 }
@@ -106,14 +111,32 @@ volatile msg_t tmr_tmp_msg;
 ISR(TIMER1_COMPA_vect) {
     if (rbi(WRITE_PINS, WRITE_PIN)) { // Level is high
         if (eod_mode == 0) {
-            msgqueue_pop(&recv_q, &tmr_tmp_msg, &error_flags);
-            eod_mode |= tmr_tmp_msg.header.fields.eod;
-            OCR1A = tmr_tmp_msg.data;
+
+            // Pop next msg from queue
+            if (((tmr_tmp_msg.header.fields.ext_pulse_len == 0) && (cur_msg_data_pos == MSG_PLS8_LEN)) ||
+                ((tmr_tmp_msg.header.fields.ext_pulse_len) && (cur_msg_data_pos == MSG_PLS16_LEN))) {
+                cur_msg_data_pos = 0;
+                msgqueue_pop(&recv_q, &tmr_tmp_msg, &error_flags); //TODO maybe check if this goes well?
+                eod_mode |= tmr_tmp_msg.header.fields.eod;
+            }
+
+            if (tmr_tmp_msg.header.fields.ext_pulse_len) {
+                if (tmr_tmp_msg.data.pulse16[cur_msg_data_pos] > 0) {
+                    OCR1A = tmr_tmp_msg.data.pulse16[cur_msg_data_pos];
+                }
+            } else {
+                if (tmr_tmp_msg.data.pulse8[cur_msg_data_pos] > 0) {
+                    OCR1A = tmr_tmp_msg.data.pulse8[cur_msg_data_pos];
+                }
+            }
+
+            cur_msg_data_pos++;
+
         } else { // eod_mode must be 1 here, so next comparison will complete the pulse of the last msg
             eod_mode++;
         }
-    } else {
-        if (eod_mode == 2) { // level is low, so last pulse is completed
+    } else { // Level is low
+        if (eod_mode == 2) { // last pulse is completed
             TCCR1A = 0;
             TCCR1B = 0;
             TIMSK &= ~(1 << OCIE1A);
@@ -123,8 +146,8 @@ ISR(TIMER1_COMPA_vect) {
 
 
 int main(void) {
-    msgqueue_init(&recv_q);
-    msgqueue_init(&send_q);
+    msgqueue_init(&recv_q, 0, MSGQ_SIZE - 1);
+    msgqueue_init(&send_q, MSGQ_SIZE - 1, 1);
 
     // Status led
     LED_PORT_DDR |= 1 << LED_PIN;
@@ -211,22 +234,28 @@ int main(void) {
                     _delay_us(1000);
                 }
 
-                // Request data to fill queue and wait until queue is full
+                // Request payload to fill queue and wait until queue is full
                 tmp_msg.header.byte_value = 0;
                 tmp_msg.header.fields.cassette_sense = 1;
                 tmp_msg.header.fields.error_detected = error_flags > 0;
-                tmp_msg.data = MSGQ_SIZE - msgqueue_count(&recv_q);
+                tmp_msg.data.bytes[0] = recv_q.size - msgqueue_count(&recv_q);
                 msgqueue_push(&send_q, &tmp_msg, &error_flags);
                 UCSRB |= (1 << UDRIE); // Start serial transmission
 
                 // Wait for queue to be filled
-                while (msgqueue_count(&recv_q) < MSGQ_SIZE) {
+                while (msgqueue_count(&recv_q) < recv_q.size) {
                     _delay_us(1000);
                 }
 
                 // Pop first message and feed pulse length to the timer
-                msgqueue_pop(&recv_q, &tmp_msg, &error_flags);
-                OCR1A = tmp_msg.data;
+                msgqueue_pop(&recv_q, &tmr_tmp_msg, &error_flags);
+                cur_msg_data_pos = 0;
+                if (tmr_tmp_msg.header.fields.ext_pulse_len) { //FIXME should check if pulse len > 0
+                    OCR1A = tmr_tmp_msg.data.pulse16[cur_msg_data_pos];
+                } else {
+                    OCR1A = tmr_tmp_msg.data.pulse8[cur_msg_data_pos];
+                }
+                cur_msg_data_pos++;
 
                 // Setup TIMER1
                 TCCR1B = (0 << CS12) |  //
@@ -247,21 +276,26 @@ int main(void) {
 
             case SM_WRITE:
                 do {
-//                    _delay_us(10000);
-                    tmp_byte = MSGQ_SIZE - msgqueue_count(&recv_q) - awaiting_msgs;
+                    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+                        tmp_byte = recv_q.size - recv_q.count - awaiting_msgs;
+                    }
+
                     if (tmp_byte >= MSGQ_REQ_THRESH) {
                         tmp_msg.header.byte_value = 0;
                         tmp_msg.header.fields.cassette_sense = CASSETTE_STOPPED;
                         if (error_flags > 0) {
                             tmp_msg.header.fields.error_detected = 1;
-                            tmp_msg.data = (error_flags << 8) + tmp_byte;
+                            tmp_msg.data.bytes[0] = error_flags;
                         } else {
-                            tmp_msg.data = tmp_byte;
+                            tmp_msg.data.bytes[0] = tmp_byte;
+                            ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+                                awaiting_msgs += tmp_byte;
+                            }
                         }
                         msgqueue_push(&send_q, &tmp_msg, &error_flags);
                         UCSRB |= (1 << UDRIE); // Start serial transmission
-                        awaiting_msgs += tmp_byte;
                     }
+
                 } while (rbi(TIMSK, OCIE1A) && !CASSETTE_STOPPED);
                 sm = SM_END_WRITE;
                 break;
@@ -282,9 +316,14 @@ int main(void) {
             case SM_INITIATE_RESET:
             default:
                 sm = SM_IDLE;
+                while(1) {
+                    TGL_LED;
+                    _delay_ms(1000);
+                }
                 break;
         }
 
+        //TODO Do a payload transfer test. See how fast can we receive the payload; when the queue is full, just empty it and request more payload until it's full again. Count number of BPS we can send from python
 
 //        tmp_sense = !(SENSE_IN_PINS & (1 << SENSE_IN_PIN) >> SENSE_IN_PIN); //FIXME Debounce maybe?
 //        if (cassette_sense != tmp_sense) {
@@ -417,7 +456,7 @@ int main(void) {
 //            }
 //        }
 //
-//        // Send data in buffer
+//        // Send payload in buffer
 //        if (head >= 0) {
 //            serial_send_msg_t(&msg_rcv_buf[head]);
 //            head++;

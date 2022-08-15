@@ -3,7 +3,7 @@
 
 #include <inttypes.h>
 
-#define MSGQ_SIZE           6
+#define MSGQ_SIZE           12
 #define MSGQ_REQ_THRESH     1
 #define MAX_PULSE_LEN       ((2 ^ 24) - 1)
 #define MIN_PULSE_LEN       5
