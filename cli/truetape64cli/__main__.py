@@ -1,4 +1,5 @@
 import binascii
+import random
 import sys
 import getopt
 import time
@@ -8,6 +9,7 @@ import logging
 
 log = logging.getLogger(__name__)
 logging.basicConfig(format='%(message)s', level=logging.INFO)
+MSG_DATA_LEN = 10
 
 
 def santize_bit(in_value):
@@ -19,19 +21,22 @@ def santize_bit(in_value):
 
 class ErrorFlags:
     FL_ERR_GENERIC = 0
-    FL_ERR_QUEUE_EMPTY = 0
-    FL_ERR_QUEUE_FULL = 0
-    FL_ERR_CHECKSUM = 0
+    FL_ERR_SEND_QUEUE_EMPTY = 0
+    FL_ERR_SEND_QUEUE_FULL = 0
+    FL_ERR_RECV_QUEUE_EMPY = 0
+    FL_ERR_RECV_QUEUE_FULL = 0
+    FL_ERR_FRAMING = 0
 
     def __dir__(self):
-        return ['FL_ERR_GENERIC', 'FL_ERR_QUEUE_EMPTY', 'FL_ERR_QUEUE_FULL', 'FL_ERR_CHECKSUM']
+        return ['FL_ERR_GENERIC', 'FL_ERR_SEND_QUEUE_EMPTY', 'FL_ERR_SEND_QUEUE_FULL', 'FL_ERR_RECV_QUEUE_EMPY',
+                'FL_ERR_RECV_QUEUE_FULL', 'FL_ERR_FRAMING']
 
     def decode_error_flags(self, in_value):
         for c, attr in enumerate(self.__dir__()):
             v = (in_value >> c) & 1
             setattr(self, attr, v)
 
-    def print(self):
+    def printout(self):
         for c, v in enumerate(self.__dir__()):
             print(v, getattr(self, v))
 
@@ -42,30 +47,89 @@ class ErrorFlags:
 
 class Msg:
 
-    def __init__(self, set_mode=None, read_tape=None, write_tape=None, eod=None, sense=None, error=None, data=None):
+    def __init__(self, set_mode=None, read_tape=None, write_tape=None, eod=None, cassette_sense=None,
+                 error_detected=None, ack=None, ext_pulse_len=None, pulses=None, available_msg=None):
         self.set_mode = santize_bit(set_mode)
         self.read_tape = santize_bit(read_tape)
         self.write_tape = santize_bit(write_tape)
         self.eod = santize_bit(eod)
-        self.sense = santize_bit(sense)
-        self.error = santize_bit(error)
+        self.cassette_sense = santize_bit(cassette_sense)
+        self.ack = santize_bit(ack)
+        self.error_detected = santize_bit(error_detected)
+        self.available_msg = santize_bit(available_msg)
+        self.error_flags = None
 
-        if isinstance(data, int):
-            self.data = data
+        if ext_pulse_len is None:
+            if pulses is None or not isinstance(pulses, list):
+                self.ext_pulse_len = 0
+                self.pulses = [0] * MSG_DATA_LEN
+            else:
+                if min(pulses) < 0:
+                    raise Exception("Pulse length can't be negative")
+
+                if max(pulses) > 2 ** 16 - 1:
+                    raise Exception("Pulse length overflow")
+
+                if max(pulses) <= 255:
+                    self.ext_pulse_len = 0
+                    if len(pulses) != MSG_DATA_LEN:
+                        raise Exception("Wrong number of pulses per message")
+                else:
+                    self.ext_pulse_len = 1
+                    if len(pulses) != MSG_DATA_LEN / 2:
+                        raise Exception("Wrong number of pulses per message")
+
+                self.pulses = pulses
+
         else:
-            self.data = 0
+            self.ext_pulse_len = santize_bit(ext_pulse_len)
 
-    def from_bytearray(self, ba):
-        if isinstance(ba, bytearray):
-            msg = bytearray(ba)
+            if pulses is None or not isinstance(pulses, list):
+                if self.ext_pulse_len:
+                    self.pulses = [0] * int(MSG_DATA_LEN / 2)
+                else:
+                    self.pulses = [0] * MSG_DATA_LEN
+            else:
+                if self.ext_pulse_len:
+                    if len(pulses) != MSG_DATA_LEN / 2:
+                        raise Exception("Wrong number of pulses per message")
+                    self.pulses = pulses
+                else:
+                    if len(pulses) != MSG_DATA_LEN:
+                        raise Exception("Wrong number of pulses per message")
+                    self.pulses = pulses
+
+    def from_serial(self, ser):
+        if isinstance(ser, serial.Serial):
+
+            # Read header
+            msg = bytearray(ser.read(1))
             self.set_mode = msg[0] & 0b00000001
             self.read_tape = (msg[0] & 0b00000010) >> 1
             self.write_tape = (msg[0] & 0b00000100) >> 2
             self.eod = (msg[0] & 0b00001000) >> 3
-            self.sense = (msg[0] & 0b00010000) >> 4
-            self.error = (msg[0] & 0b00100000) >> 5
-            self.data = int.from_bytes(msg[1:], byteorder='little', signed=False)
-            return " ".join(map("{0:08b}".format, ba))
+            self.cassette_sense = (msg[0] & 0b00010000) >> 4
+            self.error_detected = (msg[0] & 0b00100000) >> 5
+            self.ack = (msg[0] & 0b01000000) >> 6
+            self.ext_pulse_len = (msg[0] & 0b10000000) >> 7
+
+            if self.ack:
+                msg.extend(bytearray(ser.read(2)))
+                self.available_msg = int.from_bytes(msg[1:2], byteorder='little', signed=False)
+                if self.error_detected:
+                    self.error_flags = ErrorFlags(int.from_bytes(msg[2:3], byteorder='little', signed=False))
+
+            else:
+                msg.extend(bytearray(ser.read(MSG_DATA_LEN)))
+                bp = 1
+                i = 0
+                while bp < len(msg):
+                    self.pulses[i] = int.from_bytes(msg[bp:bp + 1 + self.ext_pulse_len], byteorder='little',
+                                                    signed=False)
+                    bp += (1 + self.ext_pulse_len)
+                    i += 1
+
+            return " ".join(map("{0:08b}".format, msg))
         else:
             return None
 
@@ -74,102 +138,95 @@ class Msg:
         header = header | ((self.read_tape > 0) << 1)
         header = header | ((self.write_tape > 0) << 2)
         header = header | ((self.eod > 0) << 3)
-        header = header | ((self.sense > 0) << 4)
-        header = header | ((self.error > 0) << 5)
+        header = header | ((self.cassette_sense > 0) << 4)
+        header = header | ((self.error_detected > 0) << 5)
+        header = header | ((self.ack > 0) << 6)
+        header = header | ((self.ext_pulse_len > 0) << 7)
+
         msg = bytearray(header.to_bytes(1, 'little', signed=False))
-        msg.extend(self.data.to_bytes(4, 'little', signed=False))
+        for c, v in enumerate(self.pulses):
+            msg.extend(v.to_bytes(1 + self.ext_pulse_len, 'little', signed=False))
+
         return msg, " ".join(map("{0:08b}".format, msg))
 
     def to_string(self):
-        return f"Set:{self.set_mode} Read:{self.read_tape} Write:{self.write_tape} EOD:{self.eod} Sense: {self.sense} - Error: {self.error} - Data: {self.data}"
-
-
-# def compute_checksum(buf):
-#     computed = 8
-#     for bi in range(len(buf) - 1):
-#         computed = (computed + buf[bi] & 0x3f) & 0x3f
-#
-#     computed = (computed + (buf[len(buf) - 1] & 0b00000011)) & 0x3f
-#
-#     return computed
-#
-#
-# def verify_checksum(buf):
-#     return True
-#
-#     # received = buf[len(buf) - 1] >> 2
-#     # computed = compute_checksum(buf)
-#     # if computed != received:
-#     #     log.error(f"Checksum error: computed {computed}, received {received}")
-#     #     for bi in range(len(buf)):
-#     #         log.error(f"0x{buf[bi]:02x}")
-#     #
-#     #     return False
-#     #
-#     # return True
+        return f"Set:{self.set_mode} Read:{self.read_tape} Write:{self.write_tape} EOD:{self.eod} Sense: {self.cassette_sense} - Error: {self.error_detected} - Ack: {self.ack} - ExtP: {self.ext_pulse_len} - Data: {self.pulses}"
 
 
 def test_serial(serial_device="/dev/ttyUSB3"):
     try:
-        ser = serial.Serial(serial_device, baudrate=500000, parity=serial.PARITY_EVEN, stopbits=serial.STOPBITS_ONE)
+        ser = serial.Serial(serial_device, baudrate=250000, parity=serial.PARITY_EVEN, stopbits=serial.STOPBITS_ONE)
     except (FileNotFoundError, BrokenPipeError, serial.serialutil.SerialException):
         log.error(f"Cannot open {serial_device}. Be sure it exists and it's connected to the FTDI serial adapter")
         sys.exit(1)
 
-    # Test message
-    max_pulse_len = 2 ** 32 - 1
-    msg = Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, data=max_pulse_len)
-    ba, debug_bits = msg.to_bytearray()
-    print("S", debug_bits, msg.to_string())
-    ser.write(ba)
+    log.info("Serial opened, sleeping a bit...")
+    time.sleep(1)
 
-    ba = bytearray(ser.read(5))
-
-    msg = Msg()
-    print("R", msg.from_bytearray(ba), msg.to_string())
-
-    if msg.data != max_pulse_len:
-        print("data mismatch")
-        return
-
-    # Begin write
-    msg = Msg(set_mode=1, read_tape=0, write_tape=1, eod=0, data=0)
-    ba, debug_bits = msg.to_bytearray()
-    print("S", debug_bits, msg.to_string())
-    ser.write(ba)
-    counter = 0
-    error_detected = 0
-    pulse_len = 2048
     while True:
+        # Test message
+        randbytes = list(random.getrandbits(8) for _ in range(MSG_DATA_LEN))
 
-        # Get available space in queue
-        ba = bytearray(ser.read(5))
+        msg = Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, pulses=randbytes)
+        ba, debug_bits = msg.to_bytearray()
+        print("S", debug_bits, msg.to_string())
+        ser.write(ba)
 
-        qsizemsg = Msg()
-        debug_bits = qsizemsg.from_bytearray(ba)
-        print("R", debug_bits, qsizemsg.to_string())
+        msg = Msg()
+        print("R", msg.from_serial(ser), msg.to_string())
 
-        # Read the error flags
-        if qsizemsg.error:
-            print("Error bit set at message ", counter)
-            ef = ErrorFlags(qsizemsg.data >> 8)
-            ef.print()
+        t = 0
+        for i, v in enumerate(msg.pulses):
+            if msg.pulses[i] != randbytes[i]:
+                print("data mismatch, trying again")
+                t += 1
+                break
+
+        if t == 0:
             break
 
-        # Send data to fill queue
+    # Begin write
+    msg = Msg(set_mode=1, read_tape=0, write_tape=1, eod=0, pulses=0)
+    ba, debug_bits = msg.to_bytearray()
+    print("S", debug_bits, msg.to_string())
+    ser.write(ba)
+
+    counter = 0
+    pulse_len = 300  # <85 tape seems unreliable. reliable threshold is probably higher. need to support less than 200
+    minpulselen = pulse_len
+
+    while True:
+
+        requested = 0
+
+        while ser.inWaiting():
+
+            qsizemsg = Msg()
+            debug_bits = qsizemsg.from_serial(ser)
+            print("R", debug_bits, qsizemsg.to_string())
+
+            # Read the error flags
+            if qsizemsg.error_flags:
+                print("Shortest pulse ", minpulselen)
+                qsizemsg.error_flags.printout()
+                return
+
+            requested += qsizemsg.available_msg
+
+        # Send requested data
         buf = bytearray()
-        for i in range(qsizemsg.data):
-            # msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=(i == qsizemsg.data - 1), data=(i + 1) * 128)
-            msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=0, data=pulse_len)
+        for i in range(requested):
+            pl = pulse_len - counter
+            msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=0, ext_pulse_len=1,
+                      pulses=[pl] * int(MSG_DATA_LEN / 2))
+            minpulselen = min(minpulselen, pl)
             ba, debug_bits = msg.to_bytearray()
             print("S", debug_bits, msg.to_string())
             buf.extend(ba)
-            counter += 1
+            # counter += 1
 
         ser.write(buf)
         # pulse_len -= 1
-
-    ser.close()
 
 
 # def dump(serial_device, output_file):
@@ -334,14 +391,10 @@ def run(argv):
         help(True)
 
     # dump(serial_device, output_file)
-    test_serial()
+    test_serial(serial_device=serial_device)
 
 
 def main():
-    # ef = ErrorFlags(3)
-    # ef.print()
-    # return
-
     try:
         run(sys.argv[1:])
     except KeyboardInterrupt:
