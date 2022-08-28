@@ -19,8 +19,6 @@ volatile msgqueue_t send_q;
 /* Serial port routines use these two buffers when sending and receiving payload */
 volatile uint8_t serial_rx_buf[sizeof(msg_t)];
 volatile uint8_t serial_rx_buf_count;
-volatile uint8_t serial_tx_buf[sizeof(msg_t)]; //TODO get rid of this
-volatile int8_t serial_tx_buf_pos = -1;
 volatile uint8_t requested_msgs = 0;
 
 // Serial has received one byte
@@ -42,9 +40,15 @@ ISR(USART_RX_vect) {
 }
 
 // Serial is ready to send the next byte
+volatile uint8_t serial_tx_buf[sizeof(msg_t)]; //TODO get rid of this
+volatile int8_t serial_tx_buf_pos = -1;
+volatile int8_t serial_tx_len = 0;
 ISR(USART_UDRE_vect) {
     if (serial_tx_buf_pos >= 0) { // There is a transmission ongoing
-        if (serial_tx_buf_pos < sizeof(msg_t)) { // Send next byte in TX buffer
+        if (serial_tx_buf_pos == 0) { // Just started, figure out length from content
+            serial_tx_len = ((msg_t*) &serial_tx_buf)->header.fields.ack ? sizeof(msg_header) + sizeof(ack_t) : sizeof(msg_t);
+        }
+        if (serial_tx_buf_pos < serial_tx_len) { // Send next byte in TX buffer
             UDR = serial_tx_buf[serial_tx_buf_pos++];
         } else { // No more bytes in the TX buffer
             serial_tx_buf_pos = -1;
@@ -188,15 +192,11 @@ int main(void) {
                 if (tmp_msg.header.fields.set_mode) {
                     if ((tmp_msg.header.fields.write_tape) && (tmp_msg.header.fields.read_tape)) { // TEST MODE
                         tmp_msg.header.byte_value = 0;
-//                        msgqueue_push(&send_q, &tmp_msg, &error_flags, FL_ERR_SEND_QUEUE_FULL);
-//                        UCSRB |= (1 << UDRIE); // Start serial transmission
-
                         while (serial_tx_buf_pos >= 0);
                         msg_t_ptr = (msg_t *) &serial_tx_buf;
                         *msg_t_ptr = tmp_msg;
                         serial_tx_buf_pos = 0;
                         UCSRB |= (1 << UDRIE); // Start serial transmission
-
                         break;
                     }
 
@@ -222,13 +222,16 @@ int main(void) {
                 // Request payload to fill queue and wait until queue is full
                 tmp_msg.header.byte_value = 0;
                 tmp_msg.header.fields.error_detected = error_flags > 0;
-                tmp_msg.data.bytes[0] = recv_q.size - msgqueue_count(&recv_q);
+                tmp_msg.header.fields.ack = 1;
+                tmp_msg.data.ack.error_flags = error_flags;
+                tmp_msg.data.ack.available_msg = recv_q.size - msgqueue_count(&recv_q);
 
                 while (serial_tx_buf_pos >= 0);
                 msg_t_ptr = (msg_t *) &serial_tx_buf;
                 *msg_t_ptr = tmp_msg;
                 serial_tx_buf_pos = 0;
                 UCSRB |= (1 << UDRIE); // Start serial transmission
+
 
                 // Wait for queue to be filled
                 while (msgqueue_count(&recv_q) < recv_q.size) {
@@ -272,27 +275,30 @@ int main(void) {
 
                     // Free slots in receive queue
                     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-                        tmp_msg.data.bytes[0] = recv_q.size - msgqueue_count(&recv_q) - requested_msgs;
+                        tmp_msg.data.ack.available_msg = recv_q.size - msgqueue_count(&recv_q) - requested_msgs;
                     }
 
-                    if ((tmp_msg.data.pulse8[0] > 0) && (serial_tx_buf_pos < 0)) {
+                    if ((tmp_msg.data.ack.available_msg > 0) && (serial_tx_buf_pos < 0)) {
                         tmp_msg.header.byte_value = 0;
                         tmp_msg.header.fields.error_detected = error_flags > 0;
-                        tmp_msg.data.bytes[MSG_DATA_LEN - 1] = error_flags;
+                        tmp_msg.header.fields.ack = 1;
+                        tmp_msg.data.ack.error_flags = error_flags;
+
                         msg_t_ptr = (msg_t *) &serial_tx_buf;
                         *msg_t_ptr = tmp_msg;
                         serial_tx_buf_pos = 0;
                         UCSRB |= (1 << UDRIE); // Start serial transmission
                         ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-                            requested_msgs += tmp_msg.data.bytes[0];
+                            requested_msgs += tmp_msg.data.ack.available_msg;
                         }
                     }
 
                 } while (!error_flags);
 
                 tmp_msg.header.byte_value = 0;
-                tmp_msg.header.fields.error_detected = error_flags > 0;
-                tmp_msg.data.bytes[MSG_DATA_LEN - 1] = error_flags;
+                tmp_msg.header.fields.ack = 1;
+                tmp_msg.header.fields.error_detected = 1;
+                tmp_msg.data.ack.error_flags = error_flags;
 
                 while (serial_tx_buf_pos >= 0);
                 msg_t_ptr = (msg_t *) &serial_tx_buf;

@@ -29,7 +29,7 @@ union msg_header {
         uint8_t ext_pulse_len: 1;   // 7 : PC <> TT64: length of data in the payload field is encoded as 16-bits value
     } fields;
     unsigned char byte_value;
-};
+} msg_header;
 
 typedef struct ack_t {
     uint8_t available_msg;
