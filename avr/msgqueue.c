@@ -12,12 +12,12 @@ void msgqueue_init(volatile struct msgqueue_t *q, volatile uint8_t offset, volat
     q->offset = offset;
 }
 
-void msgqueue_push(volatile msgqueue_t *q, volatile msg_t *msg, volatile flags_t *fl) {
+void msgqueue_push(volatile msgqueue_t *q, volatile msg_t *msg, volatile eflags_t *fl, uint8_t flagbit) {
 
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         if (q->count == q->size) {
             if (fl != NULL) {
-                *fl |= 1 << FL_ERR_QUEUE_FULL;
+                *fl |= 1 << flagbit;
             }
             return;
         }
@@ -33,12 +33,12 @@ void msgqueue_push(volatile msgqueue_t *q, volatile msg_t *msg, volatile flags_t
     }
 }
 
-void msgqueue_pop(volatile msgqueue_t *q, volatile msg_t *msg, volatile flags_t *fl) {
+void msgqueue_pop(volatile msgqueue_t *q, volatile msg_t *msg, volatile eflags_t *fl, uint8_t flagbit) {
 
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         if (q->count == 0) {
             if (fl != NULL) {
-                *fl |= 1 << FL_ERR_QUEUE_EMPTY;
+                *fl |= 1 << flagbit;
             }
             return;
         }
@@ -51,6 +51,15 @@ void msgqueue_pop(volatile msgqueue_t *q, volatile msg_t *msg, volatile flags_t 
         *msg = msg_buffer[q->tail + q->offset];
         q->count--;
     }
+}
+
+msg_t* msgqueue_peek(volatile msgqueue_t *q) {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        if (q->count > 0) {
+            return &msg_buffer[q->tail + q->offset];
+        }
+    }
+    return NULL;
 }
 
 uint8_t msgqueue_count(volatile msgqueue_t *q) {

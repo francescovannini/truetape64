@@ -15,8 +15,9 @@ typedef struct msgqueue_t { ;
 } msgqueue_t;
 
 void msgqueue_init(volatile struct msgqueue_t *q, volatile uint8_t offset, volatile uint8_t size);
-void msgqueue_push(volatile struct msgqueue_t *q, volatile struct msg_t *msg, volatile flags_t *fl);
-void msgqueue_pop(volatile struct msgqueue_t *q, volatile struct msg_t *msg, volatile flags_t *fl);
+void msgqueue_push(volatile struct msgqueue_t *q, volatile struct msg_t *msg, volatile eflags_t *fl, uint8_t flagbit);
+void msgqueue_pop(volatile struct msgqueue_t *q, volatile struct msg_t *msg, volatile eflags_t *fl, uint8_t flagbit);
+msg_t* msgqueue_peek(volatile msgqueue_t *q);
 uint8_t msgqueue_count(volatile struct msgqueue_t *q);
 
 #endif //TRUETAPE64_MSGQUEUE_H

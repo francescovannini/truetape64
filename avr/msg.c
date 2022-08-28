@@ -1,6 +1,6 @@
 #include "msg.h"
 
-//bool checksum(volatile msg_t *msg, volatile msg_t *msg_cs_update, volatile msg_t *msg_cs_compare, volatile flags_t *fl) {
+//bool checksum(volatile msg_t *msg, volatile msg_t *msg_cs_update, volatile msg_t *msg_cs_compare, volatile eflags_t *fl) {
 //    uint8_t checksum = 8;
 //
 //    uint8_t *msg_ptr = (uint8_t *) msg;
@@ -16,7 +16,7 @@
 //
 //    if (msg_cs_compare) {
 //        if (msg_cs_compare->checksum != checksum) {
-//            *fl |= 1 << FL_ERR_CHECKSUM;
+//            *fl |= 1 << FL_ERR_FRAMING;
 //        } else {
 //            return true;
 //        }

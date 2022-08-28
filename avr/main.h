@@ -3,8 +3,8 @@
 
 #include <inttypes.h>
 
-#define MSGQ_SIZE           12
-#define MSGQ_REQ_THRESH     1
+#define MSGQ_SIZE           3
+#define MSGQ_REQ_THRESH     0
 #define MAX_PULSE_LEN       ((2 ^ 24) - 1)
 #define MIN_PULSE_LEN       5
 
@@ -39,10 +39,8 @@
 #define CLR_LED             LED_PORT &= ~(1 << LED_PIN)
 #define TGL_LED             LED_PORT ^= 1 << LED_PIN
 
-#define FL_ERR_GENERIC      0
-#define FL_ERR_QUEUE_EMPTY  1
-#define FL_ERR_QUEUE_FULL   2
-#define FL_ERR_CHECKSUM     3
+
+
 
 #define SM_IDLE             0
 #define SM_BEGIN_WRITE      1
@@ -53,7 +51,7 @@
 #define SM_END_READ         6
 #define SM_INITIATE_RESET   8
 
-typedef uint8_t flags_t;
+
 
 #ifndef rbi
 #define rbi(sfr, bit) (((sfr)>>(bit)) & 1)
