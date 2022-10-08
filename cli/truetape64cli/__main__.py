@@ -8,7 +8,7 @@ import os.path
 import logging
 
 log = logging.getLogger(__name__)
-logging.basicConfig(format='%(message)s', level=logging.INFO)
+logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 MSG_DATA_LEN = 10
 
 
@@ -99,40 +99,6 @@ class Msg:
                         raise Exception("Wrong number of pulses per message")
                     self.pulses = pulses
 
-    def from_serial(self, ser):
-        if isinstance(ser, serial.Serial):
-
-            # Read header
-            msg = bytearray(ser.read(1))
-            self.set_mode = msg[0] & 0b00000001
-            self.read_tape = (msg[0] & 0b00000010) >> 1
-            self.write_tape = (msg[0] & 0b00000100) >> 2
-            self.eod = (msg[0] & 0b00001000) >> 3
-            self.cassette_sense = (msg[0] & 0b00010000) >> 4
-            self.error_detected = (msg[0] & 0b00100000) >> 5
-            self.ack = (msg[0] & 0b01000000) >> 6
-            self.ext_pulse_len = (msg[0] & 0b10000000) >> 7
-
-            if self.ack:
-                msg.extend(bytearray(ser.read(2)))
-                self.available_msg = int.from_bytes(msg[1:2], byteorder='little', signed=False)
-                if self.error_detected:
-                    self.error_flags = ErrorFlags(int.from_bytes(msg[2:3], byteorder='little', signed=False))
-
-            else:
-                msg.extend(bytearray(ser.read(MSG_DATA_LEN)))
-                bp = 1
-                i = 0
-                while bp < len(msg):
-                    self.pulses[i] = int.from_bytes(msg[bp:bp + 1 + self.ext_pulse_len], byteorder='little',
-                                                    signed=False)
-                    bp += (1 + self.ext_pulse_len)
-                    i += 1
-
-            return " ".join(map("{0:08b}".format, msg))
-        else:
-            return None
-
     def to_bytearray(self):
         header = self.set_mode > 0
         header = header | ((self.read_tape > 0) << 1)
@@ -143,14 +109,100 @@ class Msg:
         header = header | ((self.ack > 0) << 6)
         header = header | ((self.ext_pulse_len > 0) << 7)
 
-        msg = bytearray(header.to_bytes(1, 'little', signed=False))
+        ba = bytearray(header.to_bytes(1, 'little', signed=False))
         for c, v in enumerate(self.pulses):
-            msg.extend(v.to_bytes(1 + self.ext_pulse_len, 'little', signed=False))
+            ba.extend(v.to_bytes(1 + self.ext_pulse_len, 'little', signed=False))
 
-        return msg, " ".join(map("{0:08b}".format, msg))
+        return ba
 
-    def to_string(self):
-        return f"Set:{self.set_mode} Read:{self.read_tape} Write:{self.write_tape} EOD:{self.eod} Sense: {self.cassette_sense} - Error: {self.error_detected} - Ack: {self.ack} - ExtP: {self.ext_pulse_len} - Data: {self.pulses}"
+    def to_string(self, direction="?"):
+        bits = " ".join(map("{0:08b}".format, self.to_bytearray())).ljust((MSG_DATA_LEN + 1) * 9, " ")
+        flags = ""
+        if self.set_mode:
+            flags = flags + "SET "
+        else:
+            flags = flags + "___ "
+
+        if self.read_tape:
+            flags = flags + "READ "
+        else:
+            flags = flags + "____ "
+
+        if self.write_tape:
+            flags = flags + "WRITE "
+        else:
+            flags = flags + "_____ "
+
+        if self.eod:
+            flags = flags + "EOD "
+        else:
+            flags = flags + "___ "
+
+        if self.cassette_sense:
+            flags = flags + "SENSE "
+        else:
+            flags = flags + "_____ "
+
+        if self.error_detected:
+            flags = flags + "ERROR "
+        else:
+            flags = flags + "_____ "
+
+        if self.ack:
+            flags = flags + "ACK "
+        else:
+            flags = flags + "___ "
+
+        if self.ext_pulse_len:
+            flags = flags + "EXT "
+        else:
+            flags = flags + "___ "
+
+        if self.ack:
+            return f"{direction} {bits} | {flags} | Slots: {self.available_msg}"
+        else:
+            return f"{direction} {bits} | {flags} | Pulse: {self.pulses}"
+
+    def from_serial(self, ser):
+        if not isinstance(ser, serial.Serial):
+            return
+
+        # Read header
+        msg = bytearray(ser.read(1))
+        self.set_mode = msg[0] & 0b00000001
+        self.read_tape = (msg[0] & 0b00000010) >> 1
+        self.write_tape = (msg[0] & 0b00000100) >> 2
+        self.eod = (msg[0] & 0b00001000) >> 3
+        self.cassette_sense = (msg[0] & 0b00010000) >> 4
+        self.error_detected = (msg[0] & 0b00100000) >> 5
+        self.ack = (msg[0] & 0b01000000) >> 6
+        self.ext_pulse_len = (msg[0] & 0b10000000) >> 7
+
+        if self.ack:
+            msg.extend(bytearray(ser.read(2)))
+            self.available_msg = int.from_bytes(msg[1:2], byteorder='little', signed=False)
+            if self.error_detected:
+                self.error_flags = ErrorFlags(int.from_bytes(msg[2:3], byteorder='little', signed=False))
+            self.pulses = []
+
+        else:
+            msg.extend(bytearray(ser.read(MSG_DATA_LEN)))
+            bp = 1
+            i = 0
+            while bp < len(msg):
+                self.pulses[i] = int.from_bytes(msg[bp:bp + 1 + self.ext_pulse_len], byteorder='little',
+                                                signed=False)
+                bp += (1 + self.ext_pulse_len)
+                i += 1
+
+        log.debug(self.to_string("<"))
+
+    def to_serial(self, ser):
+        if not isinstance(ser, serial.Serial):
+            return
+
+        ser.write(self.to_bytearray())
+        log.debug(self.to_string(">"))
 
 
 def test_serial(serial_device="/dev/ttyUSB3"):
@@ -163,22 +215,22 @@ def test_serial(serial_device="/dev/ttyUSB3"):
     log.info("Serial opened, sleeping a bit...")
     time.sleep(1)
 
+    while ser.inWaiting() > 0:
+        ser.read(1)
+
     while True:
         # Test message
         randbytes = list(random.getrandbits(8) for _ in range(MSG_DATA_LEN))
 
-        msg = Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, pulses=randbytes)
-        ba, debug_bits = msg.to_bytearray()
-        print("S", debug_bits, msg.to_string())
-        ser.write(ba)
+        Msg(set_mode=1, read_tape=1, write_tape=1, eod=0, ext_pulse_len=0, pulses=randbytes).to_serial(ser)
 
         msg = Msg()
-        print("R", msg.from_serial(ser), msg.to_string())
+        msg.from_serial(ser)
 
         t = 0
         for i, v in enumerate(msg.pulses):
             if msg.pulses[i] != randbytes[i]:
-                print("data mismatch, trying again")
+                print("Data mismatch, trying again")
                 t += 1
                 break
 
@@ -186,24 +238,18 @@ def test_serial(serial_device="/dev/ttyUSB3"):
             break
 
     # Begin write
-    msg = Msg(set_mode=1, read_tape=0, write_tape=1, eod=0, pulses=0)
-    ba, debug_bits = msg.to_bytearray()
-    print("S", debug_bits, msg.to_string())
-    ser.write(ba)
+    Msg(set_mode=1, read_tape=0, write_tape=1, eod=0, pulses=0).to_serial(ser)
 
     counter = 0
     pulse_len = 300  # <85 tape seems unreliable. reliable threshold is probably higher. need to support less than 200
     minpulselen = pulse_len
 
     while True:
-
         requested = 0
-
         while ser.inWaiting():
 
             qsizemsg = Msg()
-            debug_bits = qsizemsg.from_serial(ser)
-            print("R", debug_bits, qsizemsg.to_string())
+            qsizemsg.from_serial(ser)
 
             # Read the error flags
             if qsizemsg.error_flags:
@@ -220,13 +266,8 @@ def test_serial(serial_device="/dev/ttyUSB3"):
             msg = Msg(set_mode=0, read_tape=0, write_tape=1, eod=0, ext_pulse_len=1,
                       pulses=[pl] * int(MSG_DATA_LEN / 2))
             minpulselen = min(minpulselen, pl)
-            ba, debug_bits = msg.to_bytearray()
-            print("S", debug_bits, msg.to_string())
-            buf.extend(ba)
+            msg.to_serial(ser)
             # counter += 1
-
-        ser.write(buf)
-        # pulse_len -= 1
 
 
 # def dump(serial_device, output_file):
