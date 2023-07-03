@@ -111,7 +111,7 @@ Hook up a multimeter between the MOTOR and the GND pins of the Datassette edge c
 
 ### AVR Firmware
 
-The directory [avr](./avr) in this repo contains the source code of the ATTiny2313 firmware that runs the show on the adapter side. In the avr/cmake-build-debug directory there is a compiled version of the firmware that you can flash directly onto the AVR using the included Bash script. This script requires avrdude and the usbtiny programmer: check [lady ada tutorial](https://learn.adafruit.com/usbtinyisp/avrdude) for further instructions. 
+The directory [avr](./avr) in this repo contains the source code of the ATTiny2313 firmware that runs the show on the adapter side. The file `truetape64.hex` is a pre-compiled version of the firmware that you can flash directly onto the AVR using the included Bash script. This script requires avrdude and the usbtiny programmer: check [Lady Ada tutorial](https://learn.adafruit.com/usbtinyisp/avrdude) for further instructions. 
 
 If you flash with your own tool / programmer, remember to also program the fuses:
 
