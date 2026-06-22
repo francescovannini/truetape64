@@ -128,9 +128,27 @@ The TAP v2 file format allows for pulse length values for up to 0xFFFFFF (3 byte
 
 See the [README](./cli/) included with the tool for further instructions.
 
-## License
-[GPLv3](./LICENSE)
+## Write support
+
+This project is read-only by design: it can dump tapes, but it cannot write data back to a tape. Write support is technically possible on this hardware platform, but I have no plan to implement it in the near future. That said, I would be happy to review pull requests from anyone interested in adding it.
+
+In the meantime, if you need write support today, have a look at the [projects inspired by TrueTape64](#projects-inspired-by-truetape64) below — some of them already implement it.
+
+## Projects inspired by TrueTape64
+
+It's been incredibly rewarding to see that this little project has, directly or indirectly, sparked other people's curiosity and inspired them to build their own takes on the same idea. Here are the ones I'm aware of:
+
+* [C64_TapeDump64](https://github.com/wagiminator/C64-Collection/tree/master/C64_TapeDump64) by wagiminator
+* [C64_TapeBuddy64](https://github.com/wagiminator/C64-Collection/tree/master/C64_TapeBuddy64) by wagiminator (evolution of C64_TapeDump64, adds write support)
+* [TapeMate64](https://github.com/heneault/TapeMate64) by heneault (based on C64_TapeBuddy64)
+* [Tapeosaurus](https://github.com/fabriziofiorucci/Tapeosaurus) by fabriziofiorucci
+
+If TrueTape64 inspired your own project and it's not on this list, please open a PR to add it!
+
 
 ## As seen on Hackaday
 
 This project has been featured on [Hackaday](https://hackaday.com/2021/05/10/truetape64-is-a-pc-interface-for-your-c64-datasette/)
+
+## License
+[GPLv3](./LICENSE)
